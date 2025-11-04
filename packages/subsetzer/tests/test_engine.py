@@ -184,6 +184,11 @@ class ApplyBatchTests(unittest.TestCase):
         self.assertEqual(mapping["1"], "Hola\nMundo")
         self.assertEqual(mapping["2"], "Buenos\ndias")
 
+    def test_cleanup_translation_strips_input_marker_and_double_pipes(self):
+        raw = "INPUT: keep original\nFirst line||Second line\nThird line"
+        result = engine_mod._cleanup_translation(raw)
+        self.assertEqual(result, "First line\nSecond line\nThird line")
+
 
 class HttpJsonStreamTests(unittest.TestCase):
     def test_streaming_data_prefix_handling(self):

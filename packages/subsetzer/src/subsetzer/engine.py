@@ -124,7 +124,7 @@ _TAG_RE = re.compile(r"</?[^>]+?>")
 _BRACKET_RE = re.compile(r"\[[^\]]+\]")
 _TIMECODE_LINE_RE = re.compile(r"^\d+\s*:\s*\d+:\d+", re.MULTILINE)
 _INLINE_MARKER_RE = re.compile(
-    r"^\s*(?:CUE|OUTPUT|TRANSLATION|TRANSLATED|RESPONSE|ANSWER)\s*:\s*(.*)$",
+    r"^\s*(?:CUE|OUTPUT|TRANSLATION|TRANSLATED|RESPONSE|ANSWER|INPUT)\s*:\s*(.*)$",
     re.IGNORECASE,
 )
 
@@ -170,12 +170,16 @@ def _cleanup_translation(text: str) -> str:
         return text
 
     cleaned = text.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"(?<!\|)\|\|(?!\|)", "\n", cleaned)
     lines = cleaned.split("\n")
     output: List[str] = []
     for line in lines:
         marker_match = _INLINE_MARKER_RE.match(line)
         if marker_match:
             output = []
+            label = line.split(":", 1)[0].strip().lower()
+            if label == "input":
+                continue
             remainder = marker_match.group(1)
             if remainder:
                 output.append(remainder)
