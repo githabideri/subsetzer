@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "subsetzer"
+version = "0.1.2"
+description = "Translate SRT/VTT/TSV via a local LLM (Ollama-compatible). CLI-first; stdlib-only core."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Martin Fellner", email = "martin@martinfellner.at" }]
+keywords = ["subtitles", "translation", "vtt", "srt", "ollama"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Operating System :: OS Independent",
+  "Environment :: Console",
+  "Topic :: Utilities",
+]
+dependencies = []
+
+[project.scripts]
+subsetzer = "subsetzer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/githabideri/subsetzer"
+Issues = "https://github.com/githabideri/subsetzer/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/subsetzer"]
+include = ["src/subsetzer/py.typed"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md", "LICENSE", "pyproject.toml"]
+

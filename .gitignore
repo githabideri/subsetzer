@@ -1,0 +1,28 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+.venv*/
+
+# Local configuration
+.env
+
+# Generated translation outputs and logs
+outputs/
+homedoc.log
+llm_raw.txt
+
+# Local sandbox assets (samples, notes, etc.)
+local/
+results/
+
+# Reference material (not part of this repo)
+reference/

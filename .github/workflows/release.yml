@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - subsetzer-v*
+      - subsetzer-gui-v*
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  subsetzer:
+    if: startsWith(github.ref_name, 'subsetzer-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+      - name: Build subsetzer
+        run: python -m build packages/subsetzer
+        working-directory: .
+      - name: Publish subsetzer to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/subsetzer/dist
+
+  subsetzer-gui:
+    if: startsWith(github.ref_name, 'subsetzer-gui-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+      - name: Build subsetzer-gui
+        run: python -m build packages/subsetzer-gui
+        working-directory: .
+      - name: Publish subsetzer-gui to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/subsetzer-gui/dist
+
