@@ -24,16 +24,17 @@ Current version: **0.1.2**.
 Each package is built and released independently, but they live together so changes to the engine and GUI stay in sync.
 
 ## Installation
-### From PyPI (when released)
-Once packages are published you can install them directly:
+### From PyPI (recommended)
+Install the latest published wheels straight from PyPI:
 
 ```bash
 pipx install subsetzer          # CLI only
 pipx install subsetzer-gui      # GUI (pulls in subsetzer)
 ```
+Upgrade at any time with `pipx upgrade subsetzer subsetzer-gui`.
 
-### From a local checkout (current workflow)
-Until the first PyPI release, install from the freshly built wheels:
+### From a local checkout (development builds)
+When testing unpublished commits, build the wheels locally and install from disk:
 
 ```bash
 # 1. Build wheels
