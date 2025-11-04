@@ -124,8 +124,34 @@ _TAG_RE = re.compile(r"</?[^>]+?>")
 _BRACKET_RE = re.compile(r"\[[^\]]+\]")
 _TIMECODE_LINE_RE = re.compile(r"^\d+\s*:\s*\d+:\d+", re.MULTILINE)
 _INLINE_MARKER_RE = re.compile(
-    r"^\s*(?:CUE|OUTPUT|TRANSLATION|TRANSLATED|RESPONSE|ANSWER|INPUT)\s*:\s*(.*)$",
-    re.IGNORECASE,
+    r"""
+    ^\s*(
+        CUE
+        |CURRENT\s+CUE
+        |NEXT\s+CUE
+        |PREVIOUS\s+CUE
+        |OUTPUT
+        |TRANSLATION
+        |TRANSLATED
+        |PREVIOUS\s+TRANSLATION(?:\s*\(.*\))?
+        |NEXT\s+TRANSLATION(?:\s*\(.*\))?
+        |RESPONSE
+        |ANSWER
+        |INPUT
+    )\s*:\s*(.*)$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_CHATTY_PREFIXES = (
+    "here's the translation",
+    "here is the translation",
+    "okay, here's",
+    "ok, here's",
+    "okay here's",
+    "ok here's",
+    "translation:",
+    "a possible translation",
 )
 
 
@@ -177,14 +203,18 @@ def _cleanup_translation(text: str) -> str:
         marker_match = _INLINE_MARKER_RE.match(line)
         if marker_match:
             output = []
-            label = line.split(":", 1)[0].strip().lower()
+            label = marker_match.group(1).strip().lower()
             if label == "input":
                 continue
-            remainder = marker_match.group(1)
+            remainder = marker_match.group(2)
             if remainder:
                 output.append(remainder)
             continue
         if _TIMECODE_LINE_RE.match(line.strip()):
+            continue
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if any(lowered.startswith(prefix) for prefix in _CHATTY_PREFIXES):
             continue
         output.append(line)
 
