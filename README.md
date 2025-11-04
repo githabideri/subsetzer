@@ -19,15 +19,32 @@ This repository houses both the CLI package (`subsetzer`) and the Tk-based GUI w
 Each package is built and released independently, but they live together so changes to the engine and GUI stay in sync.
 
 ## Installation
-These commands install the latest wheels from PyPI once releases are published. Until then, point `pipx` at the `dist/` wheels generated locally.
+### From PyPI (when released)
+Once packages are published you can install them directly:
 
 ```bash
 pipx install subsetzer          # CLI only
-pipx install subsetzer-gui      # GUI (installs subsetzer as a dependency)
+pipx install subsetzer-gui      # GUI (pulls in subsetzer)
 ```
 
-Alternatively, use a virtual environment and install in editable mode while developing:
+### From a local checkout (current workflow)
+Until the first PyPI release, install from the freshly built wheels:
 
+```bash
+# 1. Build wheels
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip build
+python -m build packages/subsetzer
+python -m build packages/subsetzer-gui
+
+# 2. Install with pipx (adds commands to ~/.local/bin)
+pipx install --force packages/subsetzer/dist/subsetzer-0.1.2-py3-none-any.whl
+pipx install --force packages/subsetzer-gui/dist/subsetzer_gui-0.1.2-py3-none-any.whl \
+  --pip-args="--no-index --find-links=$(pwd)/packages/subsetzer/dist --find-links=$(pwd)/packages/subsetzer-gui/dist"
+```
+
+### Editable installs for development
 ```bash
 python -m venv .venv
 source .venv/bin/activate
