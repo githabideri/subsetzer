@@ -1,12 +1,12 @@
 # Subsetzer
 
-![Version](https://img.shields.io/badge/version-0.1.2-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.1.3-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.9%2B-informational?style=flat-square)
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-brightgreen?style=flat-square)
 
 Local-first subtitle translation toolkit that talks to an Ollama-compatible LLM.  
 This repository houses both the CLI package (`subsetzer`) and the Tk-based GUI wrapper (`subsetzer-gui`).  
-Current version: **0.1.2**.
+Current version: **0.1.3**.
 
 ## Key Features
 - Translate `.srt`, `.vtt`, and `.tsv` subtitle files via models served by Ollama or compatible APIs.
@@ -45,8 +45,8 @@ python -m build packages/subsetzer
 python -m build packages/subsetzer-gui
 
 # 2. Install with pipx (adds commands to ~/.local/bin)
-pipx install --force packages/subsetzer/dist/subsetzer-0.1.2-py3-none-any.whl
-pipx install --force packages/subsetzer-gui/dist/subsetzer_gui-0.1.2-py3-none-any.whl \
+pipx install --force packages/subsetzer/dist/subsetzer-0.1.3-py3-none-any.whl
+pipx install --force packages/subsetzer-gui/dist/subsetzer_gui-0.1.3-py3-none-any.whl \
   --pip-args="--no-index --find-links=$(pwd)/packages/subsetzer/dist --find-links=$(pwd)/packages/subsetzer-gui/dist"
 ```
 
@@ -117,7 +117,7 @@ GitHub Actions publishes tagged releases to PyPI:
 - Tag `subsetzer-vX.Y.Z` to publish the CLI package.
 - Tag `subsetzer-gui-vX.Y.Z` to publish the GUI.
 
-Ensure wheels are built and verified locally (`python -m build …`) before tagging.
+Ensure wheels are built and verified locally (`python -m build …`) before tagging. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Repository Layout
 ```
