@@ -1,7 +1,12 @@
 # Subsetzer
 
+![Version](https://img.shields.io/badge/version-0.1.2-blue?style=flat-square)
+![Python](https://img.shields.io/badge/python-3.9%2B-informational?style=flat-square)
+![License](https://img.shields.io/badge/license-GPL--3.0--or--later-brightgreen?style=flat-square)
+
 Local-first subtitle translation toolkit that talks to an Ollama-compatible LLM.  
-This repository houses both the CLI package (`subsetzer`) and the Tk-based GUI wrapper (`subsetzer-gui`).
+This repository houses both the CLI package (`subsetzer`) and the Tk-based GUI wrapper (`subsetzer-gui`).  
+Current version: **0.1.2**.
 
 ## Key Features
 - Translate `.srt`, `.vtt`, and `.tsv` subtitle files via models served by Ollama or compatible APIs.
@@ -66,6 +71,8 @@ pip install -e packages/subsetzer-gui
 
 Outputs are written to the chosen directory; VTT exports include a NOTE block capturing the model and timestamp.
 
+![Subsetzer GUI screenshot](subsetzer-gui-1.png)
+
 ## Configuration
 The CLI and GUI honour `SUBSETZER_*` environment variables. Populate `.env` and `source` it before running:
 
@@ -79,6 +86,11 @@ SUBSETZER_CUES_PER_REQUEST=4
 ```
 
 Legacy `HOMEDOC_*` names are still accepted for compatibility.
+
+## Usage Details
+- **CLI**: batch translation flags (`--cues-per-request`, `--max-chars`), output templating, retries, logging, and environment variables are documented in [USAGE.md](USAGE.md#cli-subsetzer).
+- **GUI**: step-by-step walkthrough, screenshot, and tips live in [USAGE.md](USAGE.md#gui-subsetzer-gui).
+- **Outputs & troubleshooting**: see [USAGE.md](USAGE.md#outputs).
 
 ## Development
 ```bash
