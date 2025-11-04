@@ -124,34 +124,8 @@ _TAG_RE = re.compile(r"</?[^>]+?>")
 _BRACKET_RE = re.compile(r"\[[^\]]+\]")
 _TIMECODE_LINE_RE = re.compile(r"^\d+\s*:\s*\d+:\d+", re.MULTILINE)
 _INLINE_MARKER_RE = re.compile(
-    r"""
-    ^\s*(
-        CUE
-        |CURRENT\s+CUE
-        |NEXT\s+CUE
-        |PREVIOUS\s+CUE
-        |OUTPUT
-        |TRANSLATION
-        |TRANSLATED
-        |PREVIOUS\s+TRANSLATION(?:\s*\(.*\))?
-        |NEXT\s+TRANSLATION(?:\s*\(.*\))?
-        |RESPONSE
-        |ANSWER
-        |INPUT
-    )\s*:\s*(.*)$
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
-
-_CHATTY_PREFIXES = (
-    "here's the translation",
-    "here is the translation",
-    "okay, here's",
-    "ok, here's",
-    "okay here's",
-    "ok here's",
-    "translation:",
-    "a possible translation",
+    r"^\s*(?:CUE|OUTPUT|TRANSLATION|TRANSLATED|RESPONSE|ANSWER|INPUT)\s*:\s*(.*)$",
+    re.IGNORECASE,
 )
 
 
@@ -196,6 +170,12 @@ def _cleanup_translation(text: str) -> str:
         return text
 
     cleaned = text.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    sentinel = re.search(r"<translation>(.*?)</translation>", cleaned, re.IGNORECASE | re.DOTALL)
+    if sentinel:
+        content = sentinel.group(1)
+        content = re.sub(r"(?<!\|)\|\|(?!\|)", "\n", content)
+        return content.strip()
+
     cleaned = re.sub(r"(?<!\|)\|\|(?!\|)", "\n", cleaned)
     lines = cleaned.split("\n")
     output: List[str] = []
@@ -203,18 +183,14 @@ def _cleanup_translation(text: str) -> str:
         marker_match = _INLINE_MARKER_RE.match(line)
         if marker_match:
             output = []
-            label = marker_match.group(1).strip().lower()
+            label = line.split(":", 1)[0].strip().lower()
             if label == "input":
                 continue
-            remainder = marker_match.group(2)
+            remainder = marker_match.group(1)
             if remainder:
                 output.append(remainder)
             continue
         if _TIMECODE_LINE_RE.match(line.strip()):
-            continue
-        stripped = line.strip()
-        lowered = stripped.lower()
-        if any(lowered.startswith(prefix) for prefix in _CHATTY_PREFIXES):
             continue
         output.append(line)
 
@@ -308,7 +284,9 @@ def llm_translate_single(
 
     prompt = (
         "Translate the following subtitle cue from {src} to {dst}. "
-        "Preserve placeholders, formatting, and whitespace exactly."
+        "Preserve placeholders, formatting, and whitespace exactly. "
+        "Return only the translated cue wrapped between <translation> and </translation> tags; "
+        "do not add commentary before or after the tags."
     ).format(src=source or "auto-detected language", dst=target)
     if context_before or context_after:
         prompt += (

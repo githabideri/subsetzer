@@ -184,14 +184,20 @@ class ApplyBatchTests(unittest.TestCase):
         self.assertEqual(mapping["1"], "Hola\nMundo")
         self.assertEqual(mapping["2"], "Buenos\ndias")
 
-    def test_cleanup_translation_strips_markers_chatty_prefixes_and_double_pipes(self):
+    def test_cleanup_translation_prefers_translation_tags(self):
         raw = (
-            "INPUT: context ignored\n"
-            "CURRENT CUE:\n"
+            "Some chatter before\n"
+            "<translation>\n"
             "First line||Second line\n"
-            "Here's the translation into Schnodderdeutsch, preserving the formatting...\n"
-            "Third line"
+            "Third line\n"
+            "</translation>\n"
+            "Ignore this."
         )
+        result = engine_mod._cleanup_translation(raw)
+        self.assertEqual(result, "First line\nSecond line\nThird line")
+
+    def test_cleanup_translation_handles_markers_when_tags_missing(self):
+        raw = "INPUT: keep original\nFirst line||Second line\nThird line"
         result = engine_mod._cleanup_translation(raw)
         self.assertEqual(result, "First line\nSecond line\nThird line")
 
