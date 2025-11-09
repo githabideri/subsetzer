@@ -1,12 +1,12 @@
 # Subsetzer
 
-![Version](https://img.shields.io/badge/version-0.1.3-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.1.4-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.9%2B-informational?style=flat-square)
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-brightgreen?style=flat-square)
 
 Local-first subtitle translation toolkit that talks to an Ollama-compatible LLM.  
 This repository houses both the CLI package (`subsetzer`) and the Tk-based GUI wrapper (`subsetzer-gui`).  
-Current version: **0.1.3**.
+Current version: **0.1.4**.
 
 ## Key Features
 - Translate `.srt`, `.vtt`, and `.tsv` subtitle files via models served by Ollama or compatible APIs.
@@ -45,8 +45,8 @@ python -m build packages/subsetzer
 python -m build packages/subsetzer-gui
 
 # 2. Install with pipx (adds commands to ~/.local/bin)
-pipx install --force packages/subsetzer/dist/subsetzer-0.1.3-py3-none-any.whl
-pipx install --force packages/subsetzer-gui/dist/subsetzer_gui-0.1.3-py3-none-any.whl \
+pipx install --force packages/subsetzer/dist/subsetzer-0.1.4-py3-none-any.whl
+pipx install --force packages/subsetzer-gui/dist/subsetzer_gui-0.1.4-py3-none-any.whl \
   --pip-args="--no-index --find-links=$(pwd)/packages/subsetzer/dist --find-links=$(pwd)/packages/subsetzer-gui/dist"
 ```
 
@@ -87,6 +87,10 @@ SUBSETZER_CUES_PER_REQUEST=4
 ```
 
 Legacy `HOMEDOC_*` names are still accepted for compatibility.
+
+### Model notes
+- Larger Ollama models (e.g. `gemma3:12b`) handled long-form VTTs reliably in end-to-end tests.
+- Smaller checkpoints such as `gemma3:4b` frequently echoed the source text even after Subsetzer’s fallback retries; expect to babysit outputs or pick a more capable model if accurate translations are required.
 
 ## Usage Details
 - **CLI**: batch translation flags (`--cues-per-request`, `--max-chars`), output templating, retries, logging, and environment variables are documented in [USAGE.md](USAGE.md#cli-subsetzer).

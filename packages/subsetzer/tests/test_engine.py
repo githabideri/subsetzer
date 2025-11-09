@@ -184,6 +184,28 @@ class ApplyBatchTests(unittest.TestCase):
         self.assertEqual(mapping["1"], "Hola\nMundo")
         self.assertEqual(mapping["2"], "Buenos\ndias")
 
+    def test_llm_translate_batch_skips_preamble_text(self):
+        pairs = [("1", "Hello"), ("2", "World")]
+        fake_response = "Sure, here you go: 1|||Hola\n2|||Mundo\n"
+
+        with mock.patch("subsetzer.engine._perform_llm_call", return_value=fake_response):
+            translated_pairs = engine_mod.llm_translate_batch(
+                pairs,
+                source="en",
+                target="es",
+                model="demo",
+                server="http://localhost",
+                llm_mode="auto",
+                stream=False,
+                timeout=30,
+                translate_bracketed=True,
+                raw_handler=None,
+            )
+
+        mapping = {pid: text for pid, text in translated_pairs}
+        self.assertEqual(mapping["1"], "Hola")
+        self.assertEqual(mapping["2"], "Mundo")
+
     def test_cleanup_translation_prefers_translation_tags(self):
         raw = (
             "Some chatter before\n"

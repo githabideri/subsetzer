@@ -146,6 +146,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Enable verbose logging and capture raw LLM responses",
     )
     parser.add_argument(
+        "--capture-raw",
+        action="store_true",
+        help="Persist raw LLM payloads to llm_raw.txt (default: disabled)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -211,12 +216,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     log_path = target_dir / "homedoc.log"
     logger = Logger(file_path=log_path, verbose=args.debug)
     raw_lines: List[str] = []
-
-    def raw_handler(payload: str) -> None:
-        raw_lines.append(payload)
+    collect_raw = bool(args.capture_raw or args.debug)
 
     logger.log(f"Loaded transcript with {len(transcript.cues)} cues in {transcript.fmt.upper()} format")
     logger.log(f"Planned {len(chunks)} chunk(s) with max {args.max_chars} characters")
+
+    def raw_handler(payload: str) -> None:
+        if collect_raw:
+            raw_lines.append(payload)
 
     try:
         translate_range(
@@ -233,7 +240,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             timeout=args.timeout,
             no_llm=args.no_llm,
             logger=logger.log,
-            raw_handler=raw_handler if (args.debug or args.stream) else None,
+            raw_handler=raw_handler if collect_raw else None,
             verbose=args.debug,
         )
     except Exception as exc:
@@ -289,7 +296,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     logger.log(f"Wrote {target_fmt.upper()} output to {output_path}")
 
-    if args.debug or args.stream:
+    if collect_raw:
         raw_path = target_dir / "llm_raw.txt"
         try:
             raw_path.write_text("\n".join(raw_lines), encoding="utf-8")

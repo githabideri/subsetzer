@@ -26,6 +26,7 @@ subsetzer --in movie.vtt --out ./results --target "German"
 - Disable bracketed translations (`[MUSIC]`, stage directions) with `--no-translate-bracketed`.
 - Toggle streaming vs buffered responses via `--stream` / `--no-stream`.
 - Use `--no-llm` to dry-run the pipeline and reuse source text.
+- Capture raw responses on disk with `--capture-raw` (implied by `--debug`); otherwise no `llm_raw.txt` is produced.
 
 ### Environment Variables
 All flags have environment counterparts:
@@ -104,11 +105,12 @@ PYTHONPATH=packages/subsetzer/src:packages/subsetzer-gui/src python -m subsetzer
 ## Outputs
 - **VTT** exports include a `NOTE translated-with model=<model> time=<iso8601>` header.
 - Name collisions append `-N` suffixes automatically.
-- A `llm_raw.txt` file is saved when streaming/debug logging is enabled for later inspection.
+- `llm_raw.txt` is only saved when `--capture-raw` (or `--debug`) is supplied, keeping transcripts off disk unless explicitly requested.
 
 ## Troubleshooting
 - `HTTP error contacting LLM server`: verify the endpoint, model availability, and network access.
 - `Tkinter is required…`: install the system Tk bindings (`sudo apt install python3-tk` on Debian/Ubuntu).
 - Missing translations: increase `--max-chars` or reduce `--cues-per-request` to give the model more context.
+- Very small checkpoints (e.g. `gemma3:4b`) often echo the source text despite retries; prefer 12B-class models or review outputs carefully when using lightweight LLMs.
 
 For questions or ideas, open an issue or start a discussion on the GitHub repository.

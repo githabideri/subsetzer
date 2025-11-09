@@ -11,7 +11,17 @@ __all__ = ["parse_tsv", "write_tsv"]
 
 
 def parse_tsv(text: str) -> Transcript:
-    reader = csv.reader(clean_lines(text), delimiter="\t")
+    lines = clean_lines(text)
+    sample = "\n".join(lines[:5])
+    delimiter = "\t"
+    if "\t" not in sample and sample.count(",") >= sample.count("\t"):
+        delimiter = ","
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
+            delimiter = dialect.delimiter
+        except csv.Error:
+            pass
+    reader = csv.reader(lines, delimiter=delimiter)
     try:
         header = next(reader)
     except StopIteration as exc:  # pragma: no cover - defensive
@@ -21,9 +31,11 @@ def parse_tsv(text: str) -> Transcript:
     start_idx, end_idx, text_idx = _infer_tsv_columns(header_lower)
 
     cues: List[Cue] = []
+    stored_rows: List[List[str]] = []
     for idx, row in enumerate(reader, start=1):
         if not row:
             continue
+        stored_rows.append(list(row))
         try:
             start = row[start_idx]
             end = row[end_idx]
@@ -37,19 +49,33 @@ def parse_tsv(text: str) -> Transcript:
     if not cues:
         raise TranscriptError("No cues parsed from TSV file.")
 
-    return Transcript(fmt="tsv", cues=cues, tsv_header=header, tsv_cols=(start_idx, end_idx, text_idx))
+    return Transcript(
+        fmt="tsv",
+        cues=cues,
+        tsv_header=header,
+        tsv_cols=(start_idx, end_idx, text_idx),
+        tsv_rows=stored_rows,
+        tsv_delimiter=delimiter,
+    )
 
 
 def write_tsv(transcript: Transcript) -> str:
     from io import StringIO
 
     buffer = StringIO()
-    writer = csv.writer(buffer, delimiter="\t", lineterminator="\n")
+    delimiter = transcript.tsv_delimiter if transcript.tsv_header else "\t"
+    writer = csv.writer(buffer, delimiter=delimiter, lineterminator="\n")
     header = transcript.tsv_header or ["start", "end", "text"]
     writer.writerow(header)
     start_idx, end_idx, text_idx = transcript.tsv_cols or (0, 1, 2)
-    for cue in transcript.cues:
-        row = [""] * max(len(header), text_idx + 1)
+    rows = transcript.tsv_rows if transcript.tsv_rows and len(transcript.tsv_rows) == len(transcript.cues) else None
+    for idx, cue in enumerate(transcript.cues):
+        if rows is not None:
+            row = list(rows[idx])
+            if len(row) < len(header):
+                row.extend([""] * (len(header) - len(row)))
+        else:
+            row = [""] * max(len(header), text_idx + 1)
         row[start_idx] = cue.start
         row[end_idx] = cue.end
         row[text_idx] = cue.translated if cue.translated is not None else cue.text

@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from ..engine import Cue, Transcript, TranscriptError
-from .common import clean_lines, split_times
+from .common import clean_lines, split_times_with_settings
 
 __all__ = ["parse_vtt", "write_vtt", "split_times"]
 
@@ -57,10 +57,10 @@ def _flush_vtt_block(block: List[str], cues: List[Cue]) -> None:
                 break
     if not time_line:
         return
-    start, end = split_times(time_line)
+    start, end, settings = split_times_with_settings(time_line)
     text = "\n".join(block[text_start:])
     index = len(cues) + 1
-    cues.append(Cue(index=index, start=start, end=end, text=text))
+    cues.append(Cue(index=index, start=start, end=end, text=text, settings=settings))
 
 
 def write_vtt(transcript: Transcript, note: Optional[str] = None) -> str:
@@ -71,7 +71,10 @@ def write_vtt(transcript: Transcript, note: Optional[str] = None) -> str:
         lines.append("")
     for cue in transcript.cues:
         text = cue.translated if cue.translated is not None else cue.text
-        lines.append(f"{cue.start} --> {cue.end}")
+        timing = f"{cue.start} --> {cue.end}"
+        if cue.settings:
+            timing = f"{timing} {cue.settings}"
+        lines.append(timing)
         lines.extend(text.split("\n"))
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

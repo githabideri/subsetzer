@@ -22,6 +22,8 @@ def make_chunks(cues: List[Cue], max_chars: int) -> List[Chunk]:
     for pos, cue in enumerate(cues):
         text_len = len(cue.text) + cue.text.count("\n")
         text_len += len(str(cue.index)) + len(cue.start) + len(cue.end) + 5
+        if cue.settings:
+            text_len += len(cue.settings)
         if not text_len:
             text_len = 1
         needs_split = False
@@ -55,4 +57,3 @@ def make_chunks(cues: List[Cue], max_chars: int) -> List[Chunk]:
             )
         )
     return chunks
-

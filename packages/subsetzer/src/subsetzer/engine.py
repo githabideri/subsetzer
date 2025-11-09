@@ -28,6 +28,7 @@ class Cue:
     end: str
     text: str
     translated: Optional[str] = None
+    settings: str = ""
 
 
 @dataclass
@@ -37,6 +38,8 @@ class Transcript:
     header: str = ""
     tsv_header: Optional[List[str]] = None
     tsv_cols: Optional[Tuple[int, int, int]] = None
+    tsv_rows: Optional[List[List[str]]] = None
+    tsv_delimiter: str = "\t"
 
 
 @dataclass
@@ -419,7 +422,11 @@ def llm_translate_batch(
 
     mapping: Dict[str, str] = {}
     if result:
-        blocks = re.split(r"\r?\n(?=\s*\S+\|\|\|)", result.strip())
+        lines = [line for line in result.strip().splitlines() if line.strip()]
+        while lines and "|||" not in lines[0]:
+            lines.pop(0)
+        filtered = "\n".join(lines)
+        blocks = re.split(r"\r?\n(?=\s*\S+\|\|\|)", filtered) if filtered else []
     else:
         blocks = []
     for block in blocks:
@@ -429,9 +436,15 @@ def llm_translate_batch(
         if not trimmed:
             continue
         first_line, *rest_lines = trimmed.splitlines()
-        if "|||" not in first_line:
+        marker_index = first_line.find("|||")
+        if marker_index == -1:
             continue
-        pid, translated_head = first_line.split("|||", 1)
+        raw_pid = first_line[:marker_index].strip()
+        pid_match = re.search(r"(\d+)$", raw_pid) if raw_pid else None
+        pid = pid_match.group(1) if pid_match else raw_pid
+        if not pid:
+            continue
+        translated_head = first_line[marker_index + 3 :]
         translated = translated_head
         if rest_lines:
             translated += "\n" + "\n".join(rest_lines)

@@ -7,7 +7,7 @@ from unittest import mock
 
 from subsetzer.engine import Cue, Transcript, TranscriptError
 from subsetzer.formats import parse_srt, parse_tsv, parse_vtt, write_srt, write_tsv, write_vtt
-from subsetzer.io import build_output_as, resolve_outfile
+from subsetzer.io import build_output_as, resolve_outfile, read_transcript
 
 
 SRT_SAMPLE = """1
@@ -94,3 +94,34 @@ class FormatTests(unittest.TestCase):
             )
             self.assertIn("qwen3-14b", path.name)
             self.assertTrue(path.parent.exists())
+
+    def test_vtt_directives_survive_round_trip(self):
+        content = """WEBVTT
+
+00:00:01.000 --> 00:00:04.000 line:0% position:50% align:start
+Hello world
+"""
+        transcript = parse_vtt(content)
+        rendered = write_vtt(transcript)
+        self.assertIn("line:0% position:50% align:start", rendered)
+
+    def test_tsv_preserves_additional_columns(self):
+        content = "start\tend\ttext\tspeaker\n0\t1\tHello\tAlice\n"
+        transcript = parse_tsv(content)
+        transcript.cues[0].translated = "Hola"
+        rendered = write_tsv(transcript)
+        self.assertIn("Alice", rendered)
+        self.assertIn("Hola", rendered)
+
+    def test_csv_extension_with_commas_parses_correctly(self):
+        with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False) as handle:
+            handle.write("start,end,text\n0,1,Hello\n")
+            path = handle.name
+        try:
+            transcript = read_transcript(path)
+            self.assertEqual(transcript.fmt, "tsv")
+            self.assertEqual(transcript.cues[0].start, "0")
+            self.assertEqual(transcript.cues[0].end, "1")
+            self.assertEqual(transcript.cues[0].text, "Hello")
+        finally:
+            Path(path).unlink(missing_ok=True)
