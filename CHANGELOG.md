@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file. The format roughly follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions adhere to semantic versioning.
 
+# [Unreleased]
+### Fixed
+- Guard GUI cues-per-request / max-char inputs so clearing the entry doesn’t throw `_tkinter.TclError` when updating the CLI preview (see [issue #2](https://github.com/githabideri/subsetzer/issues/2); commit 8e4cceb). Shipping with 0.1.5.
+
 ## [0.1.4] - 2025-11-09
 ### Added
 - Investigation documentation capturing VTT/TSV/CSV/data-loss issues plus real-world Ollama test results.
