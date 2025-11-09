@@ -263,8 +263,19 @@ class App:
         target = self.target_var.get().strip() or "English"
         server = self.server_var.get().strip() or "http://127.0.0.1:11434"
         model = self.model_var.get().strip() or "gemma3:12b"
-        cues = max(1, int(self.cues_per_request_var.get() or 1))
-        max_chars = max(1, int(self.max_chars_var.get() or 4000))
+        try:
+            cues_input = self.cues_per_request_var.get()
+            cues_value = int(cues_input)
+        except (tk.TclError, ValueError, TypeError):
+            cues_value = 1
+        cues = max(1, cues_value)
+
+        try:
+            max_chars_input = self.max_chars_var.get()
+            max_chars_value = int(max_chars_input)
+        except (tk.TclError, ValueError, TypeError):
+            max_chars_value = 4000
+        max_chars = max(1, max_chars_value)
         outfmt = self.outfmt_var.get().strip() or "auto"
         template = self.outfile_template_var.get().strip()
 
