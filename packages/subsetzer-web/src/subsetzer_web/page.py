@@ -96,11 +96,18 @@ PAGE = """<!doctype html>
   .drop.empty .fname { color:var(--faint); }
   .drop.err { border-color:var(--err); }
 
-  .checks { display:flex; gap:16px; margin-top:12px; }
-  .checks label { display:flex; align-items:center; gap:6px; color:var(--dim);
+  .checks { display:flex; gap:22px; margin-top:12px; }
+  .checks label { display:flex; align-items:center; gap:7px; color:var(--dim);
                   font-size:11px; letter-spacing:.05em; text-transform:uppercase;
-                  cursor:pointer; }
-  .checks input { accent-color:var(--ok); }
+                  cursor:pointer; position:relative; }
+  .checks input { position:absolute; opacity:0; width:0; height:0; }
+  .checks .box { width:13px; height:13px; flex:none; background:var(--field);
+                 border:1px solid var(--line); border-radius:2px; position:relative; }
+  .checks label:hover .box { border-color:var(--faint); }
+  .checks input:checked + .box { background:var(--ok); border-color:var(--ok); }
+  .checks input:checked + .box::after { content:""; position:absolute;
+                 left:3.5px; top:0.5px; width:4px; height:8px;
+                 border:solid var(--bg); border-width:0 1.5px 1.5px 0; transform:rotate(42deg); }
 
   .actionrow { display:flex; align-items:center; gap:12px; margin-top:16px; }
   .bar { height:7px; background:var(--line2); border-radius:2px; overflow:hidden;
@@ -208,8 +215,8 @@ PAGE = """<!doctype html>
   </div>
 
   <div class="checks">
-    <label><input type="checkbox" id="no_punc"> no punctuation</label>
-    <label><input type="checkbox" id="one_line"> one line / cue</label>
+    <label><input type="checkbox" id="no_punc"><span class="box"></span>no punctuation</label>
+    <label><input type="checkbox" id="one_line"><span class="box"></span>one line / cue</label>
   </div>
 
   <div class="actionrow">
