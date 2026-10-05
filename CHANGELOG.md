@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file. The format 
 ### Fixed
 - Guard GUI cues-per-request / max-char inputs so clearing the entry doesn’t throw `_tkinter.TclError` when updating the CLI preview (see [issue #2](https://github.com/githabideri/subsetzer/issues/2); commit 8e4cceb). Shipping with 0.1.5.
 
+## [0.2.0] - 2026-10-05
+### Added
+- `subsetzer-web`: new FastAPI package — upload SRT/VTT/TSV, serial job queue, SSE progress, download, abort; env-driven LLM config, optional access token, `--api-only` mode, embedded web UI.
+- `backends.py`: OpenAI-compatible `/v1` client covering vLLM, llama.cpp, LM Studio, SGLang, and Ollama; `--extra-body` passthrough for server-specific knobs (e.g. vLLM `chat_template_kwargs`).
+- `--no-punc` (punctuation-free translation, for dubbing scripts) and `--one-line` (fold multi-line cues) post-processing options in CLI, GUI, and web.
+- `langs.py`: language-name normalisation (display names, ISO codes, common aliases).
+- CLI: `--api-key`, `--max-tokens`, `--temperature`, `--extra-body`.
+
+### Changed
+- Engine is backend-driven; the `--server` flag now takes the `/v1` root (Ollama users: `http://127.0.0.1:11434/v1`). `--llm-mode` is gone (the fork’s generate/chat split no longer applies).
+- VTT output timestamps now use `.` instead of `,` (spec-compliant, player-friendly).
+- GUI: OpenAI-compatible server field, new option checkboxes, CLI preview follows the new flags.
+
 ## [0.1.4] - 2025-11-09
 ### Added
 - Investigation documentation capturing VTT/TSV/CSV/data-loss issues plus real-world Ollama test results.

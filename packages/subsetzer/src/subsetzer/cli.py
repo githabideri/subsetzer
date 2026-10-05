@@ -3,15 +3,18 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import re
 import sys
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
+from .backends import OpenAICompat
 from .chunking import make_chunks
 from .engine import translate_range
 from .io import build_output_as, read_transcript, resolve_outfile
+from .langs import normalise_lang
 from .logging_utils import Logger
 from .version import __version__
 
@@ -19,11 +22,7 @@ DEFAULT_OUTFILE_TEMPLATE = "{basename}.{dst}.{model}.{fmt}"
 
 
 def _env_value(name: str, default: str) -> str:
-    subsetzer_key = f"SUBSETZER_{name}"
-    homedoc_key = f"HOMEDOC_{name}"
-    if subsetzer_key in os.environ:
-        return os.environ[subsetzer_key]
-    return os.getenv(homedoc_key, default)
+    return os.getenv(f"SUBSETZER_{name}", default)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -39,16 +38,41 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: Optional[float] = None) -> Optional[float]:
+    raw = os.getenv(f"SUBSETZER_{name}", "")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_json(name: str) -> Optional[Dict[str, object]]:
+    raw = os.getenv(f"SUBSETZER_{name}", "")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    server_default = _env_value("LLM_SERVER", "http://127.0.0.1:11434")
+    server_default = _env_value("LLM_SERVER", "http://127.0.0.1:11434/v1")
     model_default = _env_value("LLM_MODEL", "gemma3:12b")
-    mode_default = _env_value("LLM_MODE", "auto")
     stream_default = _env_bool("STREAM", True)
     timeout_default = float(_env_value("HTTP_TIMEOUT", "60"))
     cues_default = _env_int("CUES_PER_REQUEST", 1)
+    max_tokens_default = _env_int("MAX_TOKENS", 0) or None
+    temperature_default = _env_float("TEMPERATURE")
 
     parser = argparse.ArgumentParser(
-        description="Translate subtitle files using a local Ollama-compatible LLM.",
+        description=(
+            "Translate subtitle files with any OpenAI-compatible LLM server "
+            "(vLLM, llama.cpp, LM Studio, SGLang, Ollama /v1)."
+        ),
     )
     parser.add_argument("--in", dest="input_path", required=True, help="Input subtitle file (.srt/.vtt/.tsv)")
     parser.add_argument("--out", dest="output_dir", required=True, help="Output directory for generated files")
@@ -64,8 +88,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Write into timestamped folder within --out (default)",
     )
-    parser.add_argument("--source", default="auto", help="Source language (default: %(default)s)")
-    parser.add_argument("--target", default="English", help="Target language (default: %(default)s)")
+    parser.add_argument(
+        "--source",
+        default="auto",
+        help="Source language: ISO code (de, zh-cn), English name (German), or 'auto' (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--target",
+        default="English",
+        help="Target language: ISO code (de, zh-cn) or English name (default: %(default)s)",
+    )
     parser.add_argument(
         "--outfmt",
         choices=["auto", "srt", "vtt", "tsv"],
@@ -100,20 +132,54 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Preserve bracketed tags like [MUSIC] without translation",
     )
     parser.add_argument(
+        "--no-punc",
+        action="store_true",
+        default=_env_bool("NO_PUNC", False),
+        help="Strip punctuation from translated cues (keeps dashes); useful for CJK display",
+    )
+    parser.add_argument(
+        "--one-line",
+        action="store_true",
+        default=_env_bool("ONE_LINE", False),
+        help="Fold multi-line translated cues into a single line",
+    )
+    parser.add_argument(
         "--server",
         default=server_default,
-        help=f"LLM server URL (default: {server_default})",
+        help=(
+            "OpenAI-compatible base URL, i.e. the /v1 root "
+            f"(vLLM/llama.cpp: http://host:8080/v1, Ollama: http://host:11434/v1). "
+            f"Default: {server_default}"
+        ),
     )
     parser.add_argument(
         "--model",
         default=model_default,
-        help=f"LLM model tag (default: {model_default})",
+        help=f"LLM model name as served by the server (default: {model_default})",
     )
     parser.add_argument(
-        "--llm-mode",
-        choices=["auto", "generate", "chat"],
-        default=mode_default,
-        help=f"LLM mode (default: {mode_default})",
+        "--api-key",
+        default=_env_value("LLM_API_KEY", ""),
+        help="Optional API key sent as a Bearer token (default: SUBSETZER_LLM_API_KEY)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=max_tokens_default,
+        help="Max completion tokens per request (default: unset)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=temperature_default,
+        help="Sampling temperature (default: unset)",
+    )
+    parser.add_argument(
+        "--extra-body",
+        help=(
+            "JSON object merged verbatim into each request body, "
+            'e.g. \'{"chat_template_kwargs": {"enable_thinking": false}}\' for vLLM'
+        ),
     )
     stream_group = parser.add_mutually_exclusive_group()
     stream_group.add_argument(
@@ -162,7 +228,7 @@ def _resolve_output_directory(base: Path, flat: bool) -> Path:
     if flat:
         base.mkdir(parents=True, exist_ok=True)
         return base
-    tz_name = os.getenv("SUBSETZER_TZ") or os.getenv("HOMEDOC_TZ")
+    tz_name = os.getenv("SUBSETZER_TZ")
     now = dt.datetime.now()
     if tz_name:
         try:
@@ -200,6 +266,34 @@ def main(argv: Optional[List[str]] = None) -> int:
     input_path = Path(args.input_path).expanduser()
     output_dir = Path(args.output_dir).expanduser()
 
+    src_code = normalise_lang(args.source or "auto")
+    dst_code = normalise_lang(args.target or "auto")
+
+    extra_body: Optional[Dict[str, object]] = _env_json("EXTRA_BODY")
+    if args.extra_body:
+        try:
+            parsed = json.loads(args.extra_body)
+            if not isinstance(parsed, dict):
+                raise ValueError("--extra-body must be a JSON object")
+            extra_body = parsed
+        except (json.JSONDecodeError, ValueError) as exc:
+            print(f"Error: invalid --extra-body: {exc}", file=sys.stderr)
+            return 1
+
+    try:
+        backend = OpenAICompat(
+            args.server,
+            api_key=args.api_key or None,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            extra_body=extra_body,
+            stream=args.stream,
+            timeout=args.timeout,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
     try:
         transcript = read_transcript(str(input_path))
     except Exception as exc:
@@ -213,13 +307,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     target_dir = _resolve_output_directory(output_dir, args.flat)
-    log_path = target_dir / "homedoc.log"
+    log_path = target_dir / "subsetzer.log"
     logger = Logger(file_path=log_path, verbose=args.debug)
     raw_lines: List[str] = []
     collect_raw = bool(args.capture_raw or args.debug)
 
     logger.log(f"Loaded transcript with {len(transcript.cues)} cues in {transcript.fmt.upper()} format")
     logger.log(f"Planned {len(chunks)} chunk(s) with max {args.max_chars} characters")
+    logger.log(
+        f"Translate {src_code} -> {dst_code} via {args.server} model={args.model}"
+    )
 
     def raw_handler(payload: str) -> None:
         if collect_raw:
@@ -229,16 +326,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         translate_range(
             transcript,
             chunks,
-            server=args.server,
+            backend=backend,
             model=args.model,
             source=args.source,
             target=args.target,
             batch_n=args.cues_per_request,
             translate_bracketed=args.translate_bracketed,
-            llm_mode=args.llm_mode,
-            stream=args.stream,
-            timeout=args.timeout,
             no_llm=args.no_llm,
+            one_line=args.one_line,
+            no_punc=args.no_punc,
             logger=logger.log,
             raw_handler=raw_handler if collect_raw else None,
             verbose=args.debug,
@@ -275,8 +371,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_path = resolve_outfile(
             template_path,
             input_path,
-            _language_token(args.source or "auto", "auto"),
-            _language_token(args.target or "unknown", "unknown"),
+            _language_token(src_code, "auto"),
+            _language_token(dst_code, "unknown"),
             target_fmt,
             model=args.model,
         )

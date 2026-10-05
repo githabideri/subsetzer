@@ -125,3 +125,16 @@ Hello world
             self.assertEqual(transcript.cues[0].text, "Hello")
         finally:
             Path(path).unlink(missing_ok=True)
+
+
+class VttPeriodNormalisationTests(unittest.TestCase):
+    def test_write_vtt_normalises_commas_to_periods(self):
+        from subsetzer.engine import Cue, Transcript
+
+        cues = [
+            Cue(index=1, start="00:00:01,000", end="00:00:04,000", text="Hi"),
+        ]
+        transcript = Transcript(fmt="vtt", cues=cues, header="WEBVTT")
+        rendered = write_vtt(transcript)
+        self.assertIn("00:00:01.000 --> 00:00:04.000", rendered)
+        self.assertNotIn(",", rendered)

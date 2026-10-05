@@ -6,7 +6,7 @@ from typing import List, Optional
 from ..engine import Cue, Transcript, TranscriptError
 from .common import clean_lines, split_times_with_settings
 
-__all__ = ["parse_vtt", "write_vtt", "split_times"]
+__all__ = ["parse_vtt", "write_vtt"]
 
 
 def parse_vtt(text: str) -> Transcript:
@@ -71,7 +71,11 @@ def write_vtt(transcript: Transcript, note: Optional[str] = None) -> str:
         lines.append("")
     for cue in transcript.cues:
         text = cue.translated if cue.translated is not None else cue.text
-        timing = f"{cue.start} --> {cue.end}"
+        # WebVTT requires the period as the milliseconds separator; normalise
+        # SRT-style commas coming from parsed cues.
+        start = cue.start.replace(",", ".")
+        end = cue.end.replace(",", ".")
+        timing = f"{start} --> {end}"
         if cue.settings:
             timing = f"{timing} {cue.settings}"
         lines.append(timing)

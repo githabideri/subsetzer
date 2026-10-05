@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .version import __version__
+from .backends import LLMBackend, LLMError, OpenAICompat
 from .engine import (
     Cue,
     Chunk,
@@ -13,6 +14,7 @@ from .engine import (
     translate_range,
 )
 from .chunking import make_chunks
+from .langs import display_name, is_known_lang, normalise_lang
 from .io import (
     build_output,
     build_output_as,
@@ -24,8 +26,13 @@ from .io import (
 __all__ = [
     "__version__",
     "Cue",
-    "Chunk",
+    "LLMBackend",
     "LLMError",
+    "OpenAICompat",
+    "display_name",
+    "is_known_lang",
+    "normalise_lang",
+    "Chunk",
     "Transcript",
     "TranscriptError",
     "build_output",

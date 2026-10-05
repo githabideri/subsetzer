@@ -1,12 +1,17 @@
-"""Core translation engine interacting with Ollama-compatible servers."""
+"""Core translation engine.
+
+Talks to OpenAI-compatible LLM servers through :mod:`subsetzer.backends`
+(the default :class:`~subsetzer.backends.OpenAICompat` client covers vLLM,
+llama.cpp, LM Studio, SGLang and Ollama's ``/v1`` API).
+"""
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+from .backends import LLMBackend, LLMError, OpenAICompat
+from .langs import display_name as _prompt_lang
 
 __all__ = [
     "Cue",
@@ -14,10 +19,14 @@ __all__ = [
     "Chunk",
     "TranscriptError",
     "LLMError",
+    "LLMBackend",
+    "OpenAICompat",
     "llm_translate_single",
     "llm_translate_batch",
     "translate_range",
     "_apply_batch",
+    "_collapse_text",
+    "_remove_punctuation",
 ]
 
 
@@ -56,73 +65,6 @@ class TranscriptError(RuntimeError):
     """Raised for parsing and formatting problems."""
 
 
-class LLMError(RuntimeError):
-    """Raised when the LLM could not be contacted or returned malformed data."""
-
-
-def _extract_message(payload: object) -> str:
-    if not isinstance(payload, dict):
-        raise LLMError("Unexpected payload type; expected JSON object.")
-    # OpenAI compatibility: {"choices": [{"message": {"content": "..."}}, ...]}
-    if "choices" in payload:
-        try:
-            return payload["choices"][0]["message"]["content"]
-        except Exception as exc:  # pragma: no cover - defensive
-            raise LLMError(f"Unable to extract chat message: {exc}") from exc
-    if "response" in payload:
-        return str(payload["response"])
-    if "message" in payload and isinstance(payload["message"], dict):
-        return str(payload["message"].get("content", ""))
-    raise LLMError("LLM response did not include recognised content field.")
-
-
-def _http_json(
-    url: str,
-    payload: Dict[str, object],
-    timeout: float,
-    *,
-    stream: bool,
-    raw_handler: Optional[Callable[[str], None]] = None,
-) -> str:
-    data = json.dumps(payload).encode("utf-8")
-    req = Request(url, data=data, headers={"Content-Type": "application/json"})
-    try:
-        with urlopen(req, timeout=timeout) as resp:  # type: ignore[call-arg]
-            if not stream:
-                body = resp.read().decode("utf-8", errors="replace")
-                if raw_handler:
-                    raw_handler(body)
-                try:
-                    parsed = json.loads(body)
-                except json.JSONDecodeError as exc:
-                    raise LLMError(f"Malformed JSON response from server: {exc}") from exc
-                return _extract_message(parsed)
-
-            pieces: List[str] = []
-            for raw_line in resp:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                if raw_handler:
-                    raw_handler(line)
-                if line == "data: [DONE]":
-                    break
-                if line.startswith("data:"):
-                    line = line[len("data:") :].strip()
-                try:
-                    parsed = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                try:
-                    piece = _extract_message(parsed)
-                except LLMError:
-                    continue
-                pieces.append(piece)
-            return "".join(pieces)
-    except (HTTPError, URLError) as exc:
-        raise LLMError(f"HTTP error contacting LLM server: {exc}") from exc
-
-
 _TAG_RE = re.compile(r"</?[^>]+?>")
 _BRACKET_RE = re.compile(r"\[[^\]]+\]")
 _TIMECODE_LINE_RE = re.compile(r"^\d+\s*:\s*\d+:\d+", re.MULTILINE)
@@ -130,6 +72,42 @@ _INLINE_MARKER_RE = re.compile(
     r"^\s*(?:CUE|OUTPUT|TRANSLATION|TRANSLATED|RESPONSE|ANSWER|INPUT)\s*:\s*(.*)$",
     re.IGNORECASE,
 )
+
+# Punctuation stripped by --no-punc. CJK full-width forms and common Latin
+# punctuation; dashes and ASCII brackets are preserved (brackets often mark
+# tags such as [MUSIC] or [APPLAUSE]).
+_PUNCT_CHARS = "！？。，、；：\u201c\u201d\u2018\u2019《》【】〖〗『』「」〈〉（）…—~·.,\'\"?!;:"
+_PUNCT_RE = re.compile("[" + re.escape(_PUNCT_CHARS) + "]")
+_DASH_SPEAKER_RE = re.compile(r"^\s*-\s")
+
+
+def _remove_punctuation(text: str) -> str:
+    """Strip punctuation from cue text, keeping dashes."""
+    if not text:
+        return text
+    cleaned = _PUNCT_RE.sub(" ", text)
+    cleaned = re.sub(r" +", " ", cleaned)
+    return cleaned.strip()
+
+
+def _collapse_text(text: str) -> str:
+    """Fold a multi-line translation into a single line.
+
+    If every line starts with ``- `` (dialogue/speaker style), the markers
+    are removed before joining.
+    """
+    text = text.strip()
+    if not text:
+        return text
+
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines:
+        return text
+
+    if len(lines) > 1 and all(_DASH_SPEAKER_RE.match(line) for line in lines):
+        lines = [re.sub(r"^\s*-\s*", "", line) for line in lines]
+
+    return re.sub(r" +", " ", " ".join(lines)).strip()
 
 
 def _protect_tags(text: str) -> Tuple[str, Dict[str, str]]:
@@ -226,53 +204,15 @@ def _cleanup_translation(text: str) -> str:
     return result
 
 
-def _perform_llm_call(
-    *,
-    server: str,
-    mode: str,
-    body: Dict[str, object],
-    generate_prompt: str,
-    stream: bool,
-    timeout: float,
-    raw_handler: Optional[Callable[[str], None]] = None,
-) -> str:
-    mode = (mode or "auto").lower()
-
-    def request_chat() -> str:
-        url = server.rstrip("/") + "/api/chat"
-        return _http_json(url, body, timeout, stream=stream, raw_handler=raw_handler)
-
-    def request_generate() -> str:
-        payload = {
-            "model": body.get("model"),
-            "prompt": generate_prompt,
-            "stream": stream,
-        }
-        url = server.rstrip("/") + "/api/generate"
-        return _http_json(url, payload, timeout, stream=stream, raw_handler=raw_handler)
-
-    if mode == "chat":
-        return request_chat()
-    if mode == "generate":
-        return request_generate()
-    try:
-        return request_chat()
-    except LLMError as exc:
-        # Fallback to /generate if /chat fails
-        return request_generate()
-
-
 def llm_translate_single(
     text: str,
     *,
+    backend: LLMBackend,
+    model: str,
     source: str,
     target: str,
-    model: str,
-    server: str,
-    translate_bracketed: bool,
-    llm_mode: str,
-    stream: bool,
-    timeout: float,
+    translate_bracketed: bool = True,
+    stream: Optional[bool] = None,
     raw_handler: Optional[Callable[[str], None]] = None,
     context_before: str = "",
     context_after: str = "",
@@ -290,7 +230,7 @@ def llm_translate_single(
         "Preserve placeholders, formatting, and whitespace exactly. "
         "Return only the translated cue wrapped between <translation> and </translation> tags; "
         "do not add commentary before or after the tags."
-    ).format(src=source or "auto-detected language", dst=target)
+    ).format(src=_prompt_lang(source), dst=_prompt_lang(target))
     if context_before or context_after:
         prompt += (
             " Use the surrounding context to ensure the cue reads naturally within the full sentence, "
@@ -311,22 +251,20 @@ def llm_translate_single(
         next_translation,
     )
 
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a precise subtitle translator."},
+    raw_result = backend.chat(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a professional subtitle translator. "
+                    f"Always produce natural, idiomatic {_prompt_lang(target)}. "
+                    "Never echo the source text. Output ONLY the translation."
+                ),
+            },
             {"role": "user", "content": message_content},
         ],
-        "stream": stream,
-    }
-
-    raw_result = _perform_llm_call(
-        server=server,
-        mode=llm_mode,
-        body=body,
-        generate_prompt=message_content,
         stream=stream,
-        timeout=timeout,
         raw_handler=raw_handler,
     )
 
@@ -371,14 +309,12 @@ def _build_single_prompt(
 def llm_translate_batch(
     pairs: List[Tuple[str, str]],
     *,
+    backend: LLMBackend,
+    model: str,
     source: str,
     target: str,
-    model: str,
-    server: str,
-    llm_mode: str,
-    stream: bool,
-    timeout: float,
-    translate_bracketed: bool,
+    translate_bracketed: bool = True,
+    stream: Optional[bool] = None,
     raw_handler: Optional[Callable[[str], None]] = None,
 ) -> List[Tuple[str, str]]:
     protected_pairs: List[Tuple[str, str, Dict[str, str], Dict[str, str]]] = []
@@ -398,25 +334,23 @@ def llm_translate_batch(
         "For each cue, start a block with ID||| immediately followed by the translation. "
         "If a translation spans multiple subtitle lines, continue on subsequent lines until the next ID||| block begins. "
         "Do not merge cues together, do not skip any IDs, and never leave a cue empty."
-    ).format(src=source or "auto-detected language", dst=target)
+    ).format(src=_prompt_lang(source), dst=_prompt_lang(target))
 
     joined = "\n".join(inputs)
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You translate subtitles in bulk."},
+    result = backend.chat(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"You translate subtitles in bulk from {_prompt_lang(source)} to {_prompt_lang(target)}. "
+                    f"Always produce natural, idiomatic {_prompt_lang(target)}. "
+                    "Never echo the source text."
+                ),
+            },
             {"role": "user", "content": f"{instructions}\n\nINPUT:\n{joined}"},
         ],
-        "stream": stream,
-    }
-
-    result = _perform_llm_call(
-        server=server,
-        mode=llm_mode,
-        body=body,
-        generate_prompt=f"{instructions}\n\n{joined}",
         stream=stream,
-        timeout=timeout,
         raw_handler=raw_handler,
     )
 
@@ -468,26 +402,23 @@ def llm_translate_batch(
 def _apply_batch(
     batch: List[Tuple[str, str]],
     cues_slice: List[Cue],
+    *,
     source: str,
     target: str,
     model: str,
-    server: str,
-    llm_mode: str,
-    stream: bool,
-    timeout: float,
-    translate_bracketed: bool,
-    raw_handler: Optional[Callable[[str], None]],
+    backend: LLMBackend,
+    translate_bracketed: bool = True,
+    stream: Optional[bool] = None,
+    raw_handler: Optional[Callable[[str], None]] = None,
 ) -> List[str]:
     translated_pairs = llm_translate_batch(
         batch,
+        backend=backend,
         source=source,
         target=target,
         model=model,
-        server=server,
-        llm_mode=llm_mode,
-        stream=stream,
-        timeout=timeout,
         translate_bracketed=translate_bracketed,
+        stream=stream,
         raw_handler=raw_handler,
     )
     mapping = {pid: text for pid, text in translated_pairs}
@@ -527,14 +458,12 @@ def _apply_batch(
         )
         retry = llm_translate_single(
             cue.text,
+            backend=backend,
+            model=model,
             source=source,
             target=target,
-            model=model,
-            server=server,
             translate_bracketed=translate_bracketed,
-            llm_mode=llm_mode,
             stream=stream,
-            timeout=timeout,
             raw_handler=raw_handler,
             context_before=context_before,
             context_after=context_after,
@@ -554,28 +483,37 @@ def translate_range(
     transcript: Transcript,
     chunks: List[Chunk],
     *,
-    server: str,
+    backend: LLMBackend,
     model: str,
     source: str,
     target: str,
     batch_n: int,
-    translate_bracketed: bool,
-    llm_mode: str,
-    stream: bool,
-    timeout: float,
-    no_llm: bool,
+    translate_bracketed: bool = True,
+    no_llm: bool = False,
+    one_line: bool = False,
+    no_punc: bool = False,
+    stream: Optional[bool] = None,
     logger: Optional[Callable[[str], None]] = None,
     raw_handler: Optional[Callable[[str], None]] = None,
+    progress: Optional[Callable[[int, int], None]] = None,
     verbose: bool = False,
 ) -> None:
+    """Translate cues of ``transcript`` within the given chunks in place.
+
+    ``progress`` (if given) is called as ``progress(done, total)`` as cues
+    complete. When not ``no_llm``, ``one_line``/``no_punc`` post-process
+    every translated cue (fold multi-line cues to one line; strip
+    punctuation, keeping dashes).
+    """
     if batch_n <= 0:
         raise ValueError("batch_n must be positive")
 
+    total_cues = len(transcript.cues)
+    cues_done = 0
+
     for chunk in chunks:
         if logger and verbose:
-            logger(
-                f"Processing chunk {chunk.cid} covering cues {chunk.start_idx}-{chunk.end_idx}"
-            )
+            logger(f"Processing chunk {chunk.cid} covering cues {chunk.start_idx}-{chunk.end_idx}")
         start = chunk.start_idx - 1
         end = chunk.end_idx
         cues_slice = transcript.cues[start:end]
@@ -583,20 +521,21 @@ def translate_range(
             if no_llm:
                 for cue in cues_slice:
                     cue.translated = cue.text
+                cues_done += len(cues_slice)
+                if progress:
+                    progress(cues_done, total_cues)
                 chunk.status = "done"
                 continue
             if batch_n == 1:
                 for cue in cues_slice:
                     translated = llm_translate_single(
                         cue.text,
+                        backend=backend,
+                        model=model,
                         source=source,
                         target=target,
-                        model=model,
-                        server=server,
                         translate_bracketed=translate_bracketed,
-                        llm_mode=llm_mode,
                         stream=stream,
-                        timeout=timeout,
                         raw_handler=raw_handler,
                     )
                     if translated:
@@ -607,6 +546,9 @@ def translate_range(
                             logger(
                                 f"Warning: empty translation for cue {cue.index}; reused original text"
                             )
+                    cues_done += 1
+                    if progress:
+                        progress(cues_done, total_cues)
             else:
                 batch: List[Tuple[str, str]] = []
                 for cue in cues_slice:
@@ -615,16 +557,17 @@ def translate_range(
                         missing = _apply_batch(
                             batch,
                             cues_slice,
-                            source,
-                            target,
-                            model,
-                            server,
-                            llm_mode,
-                            stream,
-                            timeout,
-                            translate_bracketed,
-                            raw_handler,
+                            source=source,
+                            target=target,
+                            model=model,
+                            backend=backend,
+                            translate_bracketed=translate_bracketed,
+                            stream=stream,
+                            raw_handler=raw_handler,
                         )
+                        cues_done += len(batch)
+                        if progress:
+                            progress(cues_done, total_cues)
                         if missing and logger:
                             logger("Warning: missing translations for IDs " + ", ".join(missing))
                         batch = []
@@ -632,16 +575,17 @@ def translate_range(
                     missing = _apply_batch(
                         batch,
                         cues_slice,
-                        source,
-                        target,
-                        model,
-                        server,
-                        llm_mode,
-                        stream,
-                        timeout,
-                        translate_bracketed,
-                        raw_handler,
+                        source=source,
+                        target=target,
+                        model=model,
+                        backend=backend,
+                        translate_bracketed=translate_bracketed,
+                        stream=stream,
+                        raw_handler=raw_handler,
                     )
+                    cues_done += len(batch)
+                    if progress:
+                        progress(cues_done, total_cues)
                     if missing and logger:
                         logger("Warning: missing translations for IDs " + ", ".join(missing))
             chunk.status = "done"
@@ -651,3 +595,12 @@ def translate_range(
             if logger:
                 logger(f"Error processing chunk {chunk.cid}: {exc}")
             raise RuntimeError(f"Chunk {chunk.cid} failed: {exc}") from exc
+
+    if not no_llm:
+        for cue in transcript.cues:
+            if cue.translated is None:
+                continue
+            if one_line:
+                cue.translated = _collapse_text(cue.translated)
+            if no_punc:
+                cue.translated = _remove_punctuation(cue.translated)

@@ -3,33 +3,37 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "subsetzer"
+name = "subsetzer-web"
 version = "0.2.0"
-description = "Translate SRT/VTT/TSV via any OpenAI-compatible LLM (vLLM, llama.cpp, LM Studio, SGLang, Ollama). CLI-first; stdlib-only core."
+description = "FastAPI web/API server for subsetzer: upload a subtitle file, pick a model, get a translation. LAN-friendly, one command to run."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "GPL-3.0-or-later"
 authors = [{ name = "Martin Fellner", email = "martin@martinfellner.at" }]
-keywords = ["subtitles", "translation", "vtt", "srt", "openai", "vllm", "ollama", "llama.cpp"]
+keywords = ["subtitles", "translation", "web", "fastapi", "openai", "vllm", "ollama"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
   "Operating System :: OS Independent",
-  "Environment :: Console",
+  "Environment :: Web Environment",
   "Topic :: Utilities",
 ]
-dependencies = []
+dependencies = [
+  "subsetzer>=0.2.0",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "python-multipart>=0.0.9",
+]
 
 [project.scripts]
-subsetzer = "subsetzer.cli:main"
+subsetzer-web = "subsetzer_web.app:main"
 
 [project.urls]
 Homepage = "https://github.com/githabideri/subsetzer"
 Issues = "https://github.com/githabideri/subsetzer/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/subsetzer"]
-include = ["src/subsetzer/py.typed"]
+packages = ["src/subsetzer_web"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "README.md", "LICENSE", "pyproject.toml"]
+include = ["src", "README.md", "pyproject.toml"]

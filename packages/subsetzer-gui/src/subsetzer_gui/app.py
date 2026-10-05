@@ -23,7 +23,7 @@ except ImportError as exc:  # pragma: no cover - GUI optional
 else:
     _TK_IMPORT_ERROR = None
 
-from subsetzer import build_output_as, make_chunks, read_transcript, resolve_outfile, translate_range
+from subsetzer import OpenAICompat, build_output_as, make_chunks, read_transcript, resolve_outfile, translate_range
 from subsetzer.engine import Chunk, Transcript
 
 DEFAULT_OUTFILE_TEMPLATE = "{basename}.{dst}.{model}.{fmt}"
@@ -47,12 +47,14 @@ class App:
         self.target_var = tk.StringVar(value="English")
         self.outfmt_var = tk.StringVar(value="auto")
         self.outfile_template_var = tk.StringVar(value=DEFAULT_OUTFILE_TEMPLATE)
-        self.server_var = tk.StringVar(value="http://127.0.0.1:11434")
+        self.server_var = tk.StringVar(value="http://127.0.0.1:11434/v1")
         self.model_var = tk.StringVar(value="gemma3:12b")
         self.cues_per_request_var = tk.IntVar(value=1)
         self.max_chars_var = tk.IntVar(value=4000)
         self.bracket_var = tk.BooleanVar(value=True)
         self.stream_var = tk.BooleanVar(value=True)
+        self.no_punc_var = tk.BooleanVar(value=False)
+        self.one_line_var = tk.BooleanVar(value=False)
         self.flat_var = tk.BooleanVar(value=False)
         self.no_llm_var = tk.BooleanVar(value=False)
         self.cli_preview_var = tk.StringVar()
@@ -123,6 +125,13 @@ class App:
         row += 1
         add_row("Model", tk.Entry(frame, textvariable=self.model_var), row)
         row += 1
+        self.server_hint = tk.Label(
+            frame,
+            text="Server = OpenAI-compatible /v1 root (vLLM: http://host:8080/v1, Ollama: http://host:11434/v1)",
+            fg="#555555",
+        )
+        self.server_hint.grid(row=row, column=1, columnspan=2, sticky="w", pady=(0, 6))
+        row += 1
 
         cues_spin = tk.Spinbox(frame, from_=1, to=50, textvariable=self.cues_per_request_var, width=6)
         add_row("Cues/request", cues_spin, row)
@@ -134,6 +143,8 @@ class App:
         options_frame.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 4))
         tk.Checkbutton(options_frame, text="Translate bracketed", variable=self.bracket_var).pack(side=tk.LEFT)
         tk.Checkbutton(options_frame, text="Stream", variable=self.stream_var).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Checkbutton(options_frame, text="No punctuation", variable=self.no_punc_var).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Checkbutton(options_frame, text="One line per cue", variable=self.one_line_var).pack(side=tk.LEFT, padx=(10, 0))
         tk.Checkbutton(options_frame, text="Flat output", variable=self.flat_var).pack(side=tk.LEFT, padx=(10, 0))
         tk.Checkbutton(options_frame, text="Dry run (no LLM)", variable=self.no_llm_var).pack(side=tk.LEFT, padx=(10, 0))
 
@@ -189,6 +200,8 @@ class App:
             self.max_chars_var,
             self.bracket_var,
             self.stream_var,
+            self.no_punc_var,
+            self.one_line_var,
             self.no_llm_var,
             self.outfmt_var,
             self.outfile_template_var,
@@ -231,6 +244,10 @@ class App:
             self.bracket_var.set(bool(args.translate_bracketed))
         if getattr(args, "stream", None) is not None:
             self.stream_var.set(bool(args.stream))
+        if getattr(args, "no_punc", False):
+            self.no_punc_var.set(True)
+        if getattr(args, "one_line", False):
+            self.one_line_var.set(True)
         if getattr(args, "no_llm", False):
             self.no_llm_var.set(True)
 
@@ -261,7 +278,7 @@ class App:
 
         source = self.source_var.get().strip() or "auto"
         target = self.target_var.get().strip() or "English"
-        server = self.server_var.get().strip() or "http://127.0.0.1:11434"
+        server = self.server_var.get().strip() or "http://127.0.0.1:11434/v1"
         model = self.model_var.get().strip() or "gemma3:12b"
         try:
             cues_input = self.cues_per_request_var.get()
@@ -308,7 +325,11 @@ class App:
         else:
             args.append("--no-stream")
 
-        args.extend(["--llm-mode", "auto"])
+        if self.no_punc_var.get():
+            args.append("--no-punc")
+        if self.one_line_var.get():
+            args.append("--one-line")
+
         args.extend(["--timeout", "60"])
 
         if self.no_llm_var.get():
@@ -406,16 +427,19 @@ class App:
             )
             return
         args = dict(
-            server=self.server_var.get().strip(),
+            backend=OpenAICompat(
+                self.server_var.get().strip() or "http://127.0.0.1:11434/v1",
+                timeout=60.0,
+            ),
             model=self.model_var.get().strip(),
             source=self.source_var.get().strip(),
             target=self.target_var.get().strip(),
             batch_n=batch_n,
             translate_bracketed=self.bracket_var.get(),
-            llm_mode="auto",
             stream=self.stream_var.get(),
-            timeout=60.0,
             no_llm=self.no_llm_var.get(),
+            no_punc=self.no_punc_var.get(),
+            one_line=self.one_line_var.get(),
         )
         output_dir = Path(self.output_var.get()).expanduser()
         flat = self.flat_var.get()
@@ -580,7 +604,8 @@ def _build_gui_parser() -> argparse.ArgumentParser:
     stream_group.add_argument("--stream", dest="stream", action="store_const", const=True)
     stream_group.add_argument("--no-stream", dest="stream", action="store_const", const=False)
 
-    parser.add_argument("--llm-mode", choices=["auto", "generate", "chat"])
+    parser.add_argument("--no-punc", action="store_true")
+    parser.add_argument("--one-line", dest="one_line", action="store_true")
     parser.add_argument("--timeout", type=float)
     parser.add_argument("--no-llm", action="store_true")
 

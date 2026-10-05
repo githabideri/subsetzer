@@ -7,22 +7,16 @@ from subsetzer.engine import (
     Chunk,
     Transcript,
     _apply_batch,
+    _collapse_text,
+    _remove_punctuation,
     translate_range,
 )
 
 
-class FakeStreamResponse:
-    def __init__(self, lines):
-        self._lines = [line.encode("utf-8") for line in lines]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def __iter__(self):
-        return iter(self._lines)
+def fake_backend(response: str):
+    backend = mock.Mock()
+    backend.chat.return_value = response
+    return backend
 
 
 class ApplyBatchTests(unittest.TestCase):
@@ -34,6 +28,17 @@ class ApplyBatchTests(unittest.TestCase):
             Cue(index=3, start="2", end="3", text="Foo"),
             Cue(index=4, start="3", end="4", text="Bar"),
         ]
+        self.backend = mock.Mock()
+
+    def _apply(self, batch):
+        return _apply_batch(
+            batch,
+            self.cues,
+            source="",
+            target="",
+            model="demo",
+            backend=self.backend,
+        )
 
     def test_apply_batch_only_updates_present_ids(self):
         batches = iter(
@@ -47,39 +52,15 @@ class ApplyBatchTests(unittest.TestCase):
             return next(batches)
 
         with mock.patch("subsetzer.engine.llm_translate_batch", side_effect=fake_batch):
-            missing_first = _apply_batch(
-                self.original_batch[:2],
-                self.cues,
-                "",
-                "",
-                "",
-                "",
-                "auto",
-                False,
-                30,
-                True,
-                None,
-            )
+            missing_first = self._apply(self.original_batch[:2])
             self.assertEqual(missing_first, [])
             self.assertEqual(self.cues[0].translated, "Hola")
             self.assertEqual(self.cues[1].translated, "Mundo")
 
-            missing_second = _apply_batch(
-                self.original_batch[2:],
-                self.cues,
-                "",
-                "",
-                "",
-                "",
-                "auto",
-                False,
-                30,
-                True,
-                None,
-            )
-            self.assertEqual(missing_second, [])
-            self.assertEqual(self.cues[2].translated, "Baz")
-            self.assertEqual(self.cues[3].translated, "Qux")
+            missing_second = self._apply(self.original_batch[2:])
+        self.assertEqual(missing_second, [])
+        self.assertEqual(self.cues[2].translated, "Baz")
+        self.assertEqual(self.cues[3].translated, "Qux")
 
     def test_apply_batch_retries_missing_ids(self):
         def fake_batch(request_batch, **_):
@@ -89,19 +70,7 @@ class ApplyBatchTests(unittest.TestCase):
         with mock.patch("subsetzer.engine.llm_translate_batch", side_effect=fake_batch), mock.patch(
             "subsetzer.engine.llm_translate_single", return_value="Mundo"
         ) as single_mock:
-            missing = _apply_batch(
-                self.original_batch[:2],
-                self.cues,
-                "",
-                "",
-                "",
-                "",
-                "auto",
-                False,
-                30,
-                True,
-                None,
-            )
+            missing = self._apply(self.original_batch[:2])
         self.assertEqual(missing, [])
         self.assertEqual(self.cues[0].translated, "Hola")
         self.assertEqual(self.cues[1].translated, "Mundo")
@@ -117,19 +86,7 @@ class ApplyBatchTests(unittest.TestCase):
         with mock.patch("subsetzer.engine.llm_translate_batch", side_effect=fake_batch), mock.patch(
             "subsetzer.engine.llm_translate_single", return_value="   "
         ):
-            missing = _apply_batch(
-                self.original_batch[:2],
-                self.cues,
-                "",
-                "",
-                "",
-                "",
-                "auto",
-                False,
-                30,
-                True,
-                None,
-            )
+            missing = self._apply(self.original_batch[:2])
         self.assertEqual(missing, ["2"])
         self.assertEqual(self.cues[0].translated, "  Hola  ")
         self.assertEqual(self.cues[1].translated, "World")
@@ -144,19 +101,7 @@ class ApplyBatchTests(unittest.TestCase):
         with mock.patch("subsetzer.engine.llm_translate_batch", side_effect=fake_batch), mock.patch(
             "subsetzer.engine.llm_translate_single", return_value="Mundo"
         ) as single_mock:
-            missing = _apply_batch(
-                self.original_batch[:2],
-                self.cues,
-                "",
-                "",
-                "",
-                "",
-                "auto",
-                False,
-                30,
-                True,
-                None,
-            )
+            missing = self._apply(self.original_batch[:2])
         self.assertEqual(missing, [])
         self.assertEqual(self.cues[0].translated, "Hola")
         self.assertEqual(self.cues[1].translated, "Mundo")
@@ -166,41 +111,34 @@ class ApplyBatchTests(unittest.TestCase):
         pairs = [("1", "Hello"), ("2", "World")]
         fake_response = "1|||Hola\nMundo\n2|||Buenos\ndias\n"
 
-        with mock.patch("subsetzer.engine._perform_llm_call", return_value=fake_response):
-            translated_pairs = engine_mod.llm_translate_batch(
-                pairs,
-                source="en",
-                target="es",
-                model="demo",
-                server="http://localhost",
-                llm_mode="auto",
-                stream=False,
-                timeout=30,
-                translate_bracketed=True,
-                raw_handler=None,
-            )
+        backend = fake_backend(fake_response)
+        translated_pairs = engine_mod.llm_translate_batch(
+            pairs,
+            backend=backend,
+            source="en",
+            target="es",
+            model="demo",
+        )
 
         mapping = {pid: text for pid, text in translated_pairs}
         self.assertEqual(mapping["1"], "Hola\nMundo")
         self.assertEqual(mapping["2"], "Buenos\ndias")
+        called = backend.chat.call_args
+        self.assertEqual(called.kwargs["model"], "demo")
+        self.assertEqual(len(called.kwargs["messages"]), 2)
 
     def test_llm_translate_batch_skips_preamble_text(self):
         pairs = [("1", "Hello"), ("2", "World")]
         fake_response = "Sure, here you go: 1|||Hola\n2|||Mundo\n"
 
-        with mock.patch("subsetzer.engine._perform_llm_call", return_value=fake_response):
-            translated_pairs = engine_mod.llm_translate_batch(
-                pairs,
-                source="en",
-                target="es",
-                model="demo",
-                server="http://localhost",
-                llm_mode="auto",
-                stream=False,
-                timeout=30,
-                translate_bracketed=True,
-                raw_handler=None,
-            )
+        backend = fake_backend(fake_response)
+        translated_pairs = engine_mod.llm_translate_batch(
+            pairs,
+            backend=backend,
+            source="en",
+            target="es",
+            model="demo",
+        )
 
         mapping = {pid: text for pid, text in translated_pairs}
         self.assertEqual(mapping["1"], "Hola")
@@ -224,30 +162,103 @@ class ApplyBatchTests(unittest.TestCase):
         self.assertEqual(result, "First line\nSecond line\nThird line")
 
 
-class HttpJsonStreamTests(unittest.TestCase):
-    def test_streaming_data_prefix_handling(self):
-        lines = [
-            'data: {"message": {"content": "Hel"}}',
-            'data: {"message": {"content": "lo"}}',
-            "data: [DONE]",
-        ]
-        fake_response = FakeStreamResponse(lines)
-        collector = []
+class PostProcessingTests(unittest.TestCase):
+    def test_collapse_text_joins_lines(self):
+        self.assertEqual(_collapse_text("line one\nline two\nline three"), "line one line two line three")
+        self.assertEqual(_collapse_text("  spaced   out  \n"), "spaced out")
+        self.assertEqual(_collapse_text(""), "")
 
-        def fake_urlopen(req, timeout):
-            return fake_response
+    def test_collapse_text_strips_speaker_dashes(self):
+        self.assertEqual(_collapse_text("- Anna\n- Ben"), "Anna Ben")
+        # Single dash line stays as-is (marker only stripped in all-dash runs)
+        self.assertEqual(_collapse_text("- Anna"), "- Anna")
 
-        with mock.patch("subsetzer.engine.urlopen", side_effect=fake_urlopen):
-            result = engine_mod._http_json(  # type: ignore[attr-defined]
-                "http://example/api/chat",
-                {"a": 1},
-                10,
-                stream=True,
-                raw_handler=collector.append,
+    def test_remove_punctuation_keeps_dashes_and_brackets(self):
+        self.assertEqual(
+            _remove_punctuation("Hello, world! How's it going?\u2014fine\u3002"),
+            "Hello world How s it going fine",
+        )
+        self.assertEqual(_remove_punctuation("[MUSIC]"), "[MUSIC]")
+        self.assertEqual(_remove_punctuation("a - b - c"), "a - b - c")
+
+    def test_translate_range_no_punc_and_one_line(self):
+        transcript = Transcript(
+            fmt="srt",
+            cues=[
+                Cue(index=1, start="0", end="1", text="Hallo, wie geht's?"),
+                Cue(index=2, start="1", end="2", text="Mir gut.\nDanke!"),
+            ],
+        )
+        chunk = Chunk(cid=1, start_idx=1, end_idx=2, charcount=30)
+        calls = []
+
+        def fake_single(text, **kwargs):
+            calls.append(text)
+            return "Hola! Bien."
+
+        with mock.patch("subsetzer.engine.llm_translate_single", side_effect=fake_single):
+            translate_range(
+                transcript,
+                [chunk],
+                backend=mock.Mock(),
+                model="demo",
+                source="en",
+                target="de",
+                batch_n=1,
+                no_llm=False,
+                no_punc=True,
+                one_line=True,
             )
 
-        self.assertEqual(result, "Hello")
-        self.assertEqual(collector, lines)
+        self.assertEqual(calls, ["Hallo, wie geht's?", "Mir gut.\nDanke!"])
+        self.assertEqual(transcript.cues[0].translated, "Hola Bien")
+        self.assertEqual(transcript.cues[1].translated, "Hola Bien")
+
+    def test_translate_range_no_punc_not_applied_in_no_llm(self):
+        transcript = Transcript(fmt="srt", cues=[Cue(index=1, start="0", end="1", text="Keep: [TAG], ok!")])
+        chunk = Chunk(cid=1, start_idx=1, end_idx=1, charcount=10)
+        translate_range(
+            transcript,
+            [chunk],
+            backend=mock.Mock(),
+            model="demo",
+            source="en",
+            target="de",
+            batch_n=1,
+            no_llm=True,
+            no_punc=True,
+        )
+        self.assertEqual(transcript.cues[0].translated, "Keep: [TAG], ok!")
+
+    def test_translate_range_progress_hook(self):
+        transcript = Transcript(
+            fmt="srt",
+            cues=[
+                Cue(index=1, start="0", end="1", text="A"),
+                Cue(index=2, start="1", end="2", text="B"),
+                Cue(index=3, start="2", end="3", text="C"),
+            ],
+        )
+        chunk = Chunk(cid=1, start_idx=1, end_idx=3, charcount=3)
+        progress: list = []
+
+        def fake_batch(request_batch, **_):
+            return [(pid, f"tr-{pid}") for pid, _ in request_batch]
+
+        with mock.patch("subsetzer.engine.llm_translate_batch", side_effect=fake_batch):
+            translate_range(
+                transcript,
+                [chunk],
+                backend=mock.Mock(),
+                model="demo",
+                source="en",
+                target="de",
+                batch_n=2,
+                progress=lambda d, t: progress.append((d, t)),
+            )
+        # batch of 2, then batch of 1
+        self.assertEqual(progress, [(2, 3), (3, 3)])
+        self.assertEqual([c.translated for c in transcript.cues], ["tr-1", "tr-2", "tr-3"])
 
 
 class TranslationWhitespaceTests(unittest.TestCase):
@@ -259,15 +270,11 @@ class TranslationWhitespaceTests(unittest.TestCase):
             translate_range(
                 transcript,
                 [chunk],
-                server="http://localhost",
+                backend=mock.Mock(),
                 model="demo",
                 source="en",
                 target="de",
                 batch_n=1,
-                translate_bracketed=True,
-                llm_mode="auto",
-                stream=False,
-                timeout=10,
                 no_llm=False,
             )
 
