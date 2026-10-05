@@ -68,14 +68,21 @@ PAGE = """<!doctype html>
   .label { font-size:10px; letter-spacing:.10em; text-transform:uppercase;
            color:var(--faint); margin:12px 0 5px; }
   .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  input[type=text], select {
+  input[type=text], input[type=number], select {
     width:100%; background:var(--field); color:var(--text); border:1px solid var(--line);
     border-radius:3px; padding:6px 9px; font:inherit; font-size:13px;
   }
-  input[type=text]:focus, select:focus { outline:none; border-color:var(--faint); }
+  input[type=text]:focus, input[type=number]:focus, select:focus { outline:none; border-color:var(--faint); }
   input[type=number] { -moz-appearance:textfield; }
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; }
+
+  .step { display:flex; gap:6px; }
+  .step button { background:transparent; border:1px solid var(--line); border-radius:3px;
+                 color:var(--dim); font:inherit; font-size:13px; padding:0 11px; cursor:pointer;
+                 line-height:27px; }
+  .step button:hover { background:var(--line2); color:var(--text); }
+  .step input { flex:1; text-align:center; }
 
   /* drop zone in place of the native file input */
   .drop { border:1px dashed var(--line); border-radius:3px; background:var(--field);
@@ -191,7 +198,11 @@ PAGE = """<!doctype html>
     </div>
     <div>
       <label class="label" for="cues">Cues / request</label>
-      <input type="number" id="cues" name="cues_per_request" min="1" max="15" value="1">
+      <div class="step">
+        <button type="button" id="minus" aria-label="decrease">−</button>
+        <input type="number" id="cues" name="cues_per_request" min="1" max="15" value="1">
+        <button type="button" id="plus" aria-label="increase">+</button>
+      </div>
       <div class="label" style="margin:4px 0 0;">1 = most robust · 4–8 = faster</div>
     </div>
   </div>
@@ -318,6 +329,16 @@ async function loadModels() {
   }
 }
 loadModels();
+
+// --- cues stepper --------------------------------------------------------------
+const cues = $("cues");
+function bumpCues(d) {
+  let v = parseInt(cues.value, 10);
+  if (isNaN(v)) v = 1;
+  cues.value = Math.min(15, Math.max(1, v + d));
+}
+$("minus").addEventListener("click", () => bumpCues(-1));
+$("plus").addEventListener("click", () => bumpCues(+1));
 
 // --- translate -----------------------------------------------------------------
 $("go").addEventListener("click", async () => {
