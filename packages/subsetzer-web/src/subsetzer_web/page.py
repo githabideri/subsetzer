@@ -51,10 +51,13 @@ PAGE = """<!doctype html>
   h1 { font-size:15px; font-weight:700; letter-spacing:.02em; }
   .sub { color:var(--faint); font-size:12px; }
   .tick { color:var(--faint); font-size:11px; margin-left:auto; }
-  .theme { margin-left:10px; font:inherit; font-size:11px; letter-spacing:.08em;
-           text-transform:uppercase; background:var(--field); color:var(--dim);
-           border:1px solid var(--line); border-radius:3px; padding:2px 6px; }
-  .theme:focus { outline:none; border-color:var(--faint); }
+  .themes { display:flex; border:1px solid var(--line); border-radius:3px; overflow:hidden; }
+  .themes button { background:transparent; border:0; color:var(--faint); font:inherit;
+                   font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+                   padding:3px 9px; cursor:pointer; }
+  .themes button + button { border-left:1px solid var(--line); }
+  .themes button:hover { color:var(--text); }
+  .themes button.on { background:var(--line2); color:var(--text); }
 
   .card { background:var(--panel); border:1px solid var(--line); border-radius:6px;
           padding:14px 16px 12px; margin-bottom:12px; }
@@ -151,11 +154,11 @@ PAGE = """<!doctype html>
   <h1>subsetzer</h1>
   <span class="sub">subtitle translation</span>
   <span class="tick" id="tick">connecting…</span>
-  <select class="theme" id="theme">
-    <option value="auto">auto</option>
-    <option value="dark">dark</option>
-    <option value="light">light</option>
-  </select>
+  <div class="themes" id="themes">
+    <button data-t="auto" type="button">auto</button>
+    <button data-t="dark" type="button">dark</button>
+    <button data-t="light" type="button">light</button>
+  </div>
 </header>
 
 <section class="card">
@@ -228,18 +231,23 @@ let es = null;
 let currentFile = null;
 
 // --- theme (auto by default, persisted) ------------------------------------
-const themeSel = $("theme");
+const themesEl = $("themes");
 const mq = window.matchMedia("(prefers-color-scheme: light)");
+let themeChoice = "auto";
 function applyTheme(t) {
+  themeChoice = t;
   const effective = t === "auto" ? (mq.matches ? "light" : "dark") : t;
   document.documentElement.dataset.theme = effective;
-  themeSel.value = t;
+  themesEl.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
   try { localStorage.setItem("subsetzer-theme", t); } catch (_) {}
 }
 try { applyTheme(localStorage.getItem("subsetzer-theme") || "auto"); }
 catch (_) { applyTheme("auto"); }
-themeSel.addEventListener("change", () => applyTheme(themeSel.value));
-mq.addEventListener("change", () => { if (themeSel.value === "auto") applyTheme("auto"); });
+themesEl.addEventListener("click", e => {
+  const b = e.target.closest("button[data-t]");
+  if (b) applyTheme(b.dataset.t);
+});
+mq.addEventListener("change", () => { if (themeChoice === "auto") applyTheme("auto"); });
 
 // --- file selection ---------------------------------------------------------
 const fileInput = $("file");
