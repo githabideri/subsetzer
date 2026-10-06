@@ -24,7 +24,12 @@ __all__ = [
     "LLMError",
     "LLMBackend",
     "OpenAICompat",
+    "parse_string_array",
 ]
+
+
+def parse_string_array(content: Optional[str], *, n: int) -> Optional[List[str]]:
+    return _parse_string_array(content, n=n)
 
 
 class LLMError(RuntimeError):
@@ -84,14 +89,154 @@ class OpenAICompat:
         model: str,
         messages: List[Dict[str, str]],
         stream: bool,
+        response_format: Optional[Dict[str, Any]] = None,
+        repetition_detection: Optional[Dict[str, int]] = None,
+        seed: Optional[int] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
         if self.max_tokens is not None:
             body["max_tokens"] = self.max_tokens
         if self.temperature is not None:
             body["temperature"] = self.temperature
+        if response_format is not None:
+            body["response_format"] = response_format
+        if repetition_detection is not None:
+            body["repetition_detection"] = repetition_detection
+        if seed is not None:
+            body["seed"] = seed
         body.update(self.extra_body)
         return body
+
+    # -- structured (non-streaming) chat ---------------------------------
+
+    def chat_full(
+        self,
+        *,
+        model: str,
+        messages: List[Dict[str, str]],
+        response_format: Optional[Dict[str, Any]] = None,
+        repetition_detection: Optional[Dict[str, int]] = None,
+        seed: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Non-streaming chat completion.
+
+        Returns ``{"content": str, "finish_reason": Optional[str]}``.
+        ``repetition_detection`` is a vLLM extension (n-gram loop detector);
+        servers that don't know it ignore it. ``finish_reason`` is
+        ``"repetition"`` when vLLM's detector stopped a degenerate loop.
+        """
+        if timeout is not None:
+            self.timeout = timeout
+        url = self.base_url + "/chat/completions"
+        body = self._body(
+            model, messages, False, response_format, repetition_detection, seed
+        )
+        with self._open(url, body) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"Malformed JSON response from server: {exc}") from exc
+        content = self._message_from(parsed, delta=False)
+        finish_reason: Optional[str] = None
+        choices = parsed.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            fr = choices[0].get("finish_reason")
+            if isinstance(fr, str):
+                finish_reason = fr
+        return {"content": content, "finish_reason": finish_reason}
+
+    # -- capability probe ------------------------------------------------
+
+    def probe_capabilities(
+        self, model: str, *, timeout: float = 20.0
+    ) -> Dict[str, bool]:
+        """Cheaply probe which response-contract features this server honors.
+
+        Sends one or two tiny requests (<=48 tokens) and validates the
+        *shape of the response*, not just the HTTP status — some servers
+        (notably llama.cpp) silently ignore ``json_schema`` and return free
+        text. Returns ``{"json_schema", "json_object",
+        "repetition_detection"}`` booleans; all ``False`` means the
+        caller should fall back to the sentinel-tag protocol.
+        Results are cached per (server, model).
+        """
+        key = (self.base_url, model)
+        cached = getattr(self, "_caps_cache", None)
+        if cached and key in cached:
+            return cached[key]
+        caps = {"json_schema": False, "json_object": False, "repetition_detection": False}
+        schema = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "lines",
+                "strict": True,
+                "schema": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+            },
+        }
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "Translate the words 'house' and 'door' to German. "
+                    "Reply with a JSON array of exactly two strings, in order."
+                ),
+            }
+        ]
+        for rd in ({"max_pattern_size": 8, "min_count": 3}, None):
+            try:
+                res = self.chat_full(
+                    model=model,
+                    messages=messages,
+                    response_format=schema,
+                    repetition_detection=rd,
+                    timeout=timeout,
+                )
+            except LLMError:
+                res = None
+            if res is not None:
+                parsed = _parse_string_array(res["content"], n=2)
+                if parsed is not None:
+                    caps["json_schema"] = True
+                    if rd is not None:
+                        caps["repetition_detection"] = True
+                break  # request was accepted; no need to retry without rd
+        if not caps["json_schema"]:
+            obj_messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Translate the words 'house' and 'door' to German. "
+                        'Reply with a JSON object: {"lines": ["...", "..."]}'
+                    ),
+                }
+            ]
+            try:
+                res = self.chat_full(
+                    model=model,
+                    messages=obj_messages,
+                    response_format={"type": "json_object"},
+                    timeout=timeout,
+                )
+                payload = json.loads(res["content"])
+                lines = payload.get("lines") if isinstance(payload, dict) else None
+                if isinstance(lines, list) and len(lines) == 2 and all(
+                    isinstance(x, str) and x.strip() for x in lines
+                ):
+                    caps["json_object"] = True
+            except (LLMError, json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if cached is None:
+            self._caps_cache = {}
+            cached = self._caps_cache  # type: ignore[assignment]
+        cached[key] = caps
+        return caps
 
     def _open(
         self,
@@ -192,3 +337,20 @@ class OpenAICompat:
                     continue
                 pieces.append(piece)
             return "".join(pieces)
+
+
+def _parse_string_array(content: Optional[str], *, n: int) -> Optional[List[str]]:
+    """Parse a JSON array (or ``{"lines": [...]}``) of exactly ``n`` non-empty strings."""
+    if not content or not content.strip():
+        return None
+    try:
+        payload = json.loads(content.strip())
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict):
+        payload = payload.get("lines")
+    if not isinstance(payload, list) or len(payload) != n:
+        return None
+    if not all(isinstance(x, str) and x.strip() for x in payload):
+        return None
+    return [x.strip() for x in payload]

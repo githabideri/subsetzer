@@ -8,6 +8,9 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [0.2.0] - 2026-10-05
 ### Added
+- Structured batch contract: at session start the engine probes the server and uses the strongest response format it *verifiably* honors — `response_format: json_schema` (JSON array of exactly N strings), then `json_object`, then the classic `ID|||` sentinel protocol. The probe validates the *shape of the answer*, because some servers (notably llama.cpp) silently ignore `json_schema` and return free text.
+- vLLM `repetition_detection` n-gram loop backstop: degenerate generation is terminated by the server with a typed `finish_reason: "repetition"` instead of burning the full `max_tokens` budget (the old `Qo'pu'` ×400 failure mode). Closed policy per batch: degenerate → one re-sampled retry (`seed`) → flagged cues keep their source text; malformed → per-cue single-cue fallback. Servers without the extension simply ignore the field; sentinel servers are untouched.
+- `subsetzer-web`: multi-server registry (`SUBSETZER_LLM_SERVERS`, a JSON list of `{name, url, api_key?}` mirroring the llm-hub config); `/models` unions every registered server's live `/v1/models` list (grouped by server in the UI, unreachable servers reported); jobs route automatically to the server that serves the selected model. Single-server setups via `SUBSETZER_LLM_SERVER` behave exactly as before.
 - `subsetzer-web`: new FastAPI package — upload SRT/VTT/TSV, serial job queue, SSE progress, download, abort; env-driven LLM config, optional access token, `--api-only` mode, embedded web UI.
 - `backends.py`: OpenAI-compatible `/v1` client covering vLLM, llama.cpp, LM Studio, SGLang, and Ollama; `--extra-body` passthrough for server-specific knobs (e.g. vLLM `chat_template_kwargs`).
 - `--no-punc` (punctuation-free translation, for dubbing scripts) and `--one-line` (fold multi-line cues) post-processing options in CLI, GUI, and web.

@@ -6,6 +6,7 @@ llama.cpp, LM Studio, SGLang and Ollama's ``/v1`` API).
 """
 from __future__ import annotations
 
+import random
 import re
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
@@ -23,6 +24,7 @@ __all__ = [
     "OpenAICompat",
     "llm_translate_single",
     "llm_translate_batch",
+    "llm_translate_batch_structured",
     "translate_range",
     "_apply_batch",
     "_collapse_text",
@@ -399,6 +401,125 @@ def llm_translate_batch(
     return output
 
 
+def llm_translate_batch_structured(
+    pairs: List[Tuple[str, str]],
+    *,
+    backend: LLMBackend,
+    model: str,
+    source: str,
+    target: str,
+    mode: str = "json",
+    translate_bracketed: bool = True,
+    stream: Optional[bool] = None,
+    raw_handler: Optional[Callable[[str], None]] = None,
+    repetition_detection: bool = False,
+    seed: Optional[int] = None,
+) -> Tuple[List[Tuple[str, str]], str]:
+    """Batch translate with a *declared* response contract.
+
+    ``mode`` is ``"json"`` (``response_format: json_schema`` — array of
+    exactly ``len(pairs)`` strings) or ``"json_object"``
+    (``{type: json_object}`` with a ``{"lines": [...]}`` wrapper prompt).
+    Returns ``(pairs, status)`` where status is ``"ok"`` (all cues
+    translated), ``"degenerate"`` (server loop detector stopped the run —
+    vLLM ``finish_reason: "repetition"``) or ``"malformed"`` (response did
+    not satisfy the contract).
+    """
+    chat_full = getattr(backend, "chat_full", None)
+    if not isinstance(backend, OpenAICompat):
+        # Duck-typed backends without structured support: sentinel fallback.
+        return llm_translate_batch(
+            pairs,
+            backend=backend,
+            model=model,
+            source=source,
+            target=target,
+            translate_bracketed=translate_bracketed,
+            stream=stream,
+            raw_handler=raw_handler,
+        ), "ok"
+
+    protected: List[Tuple[str, str, Dict[str, str], Dict[str, str]]] = []
+    lines: List[str] = []
+    for pid, text in pairs:
+        prepared, tag_map = _protect_tags(text)
+        bracket_map: Dict[str, str] = {}
+        if not translate_bracketed:
+            prepared, bracket_map = _protect_brackets(prepared)
+        lines.append(f"{len(lines) + 1}. {prepared}")
+        protected.append((pid, prepared, tag_map, bracket_map))
+    n = len(pairs)
+
+    instructions = (
+        "Translate the following subtitle cues from {src} to {dst}. "
+        "Cues form a continuous transcript and may contain partial sentences. "
+        "Keep each translated cue natural and roughly similar in length to the source fragment so it fits the on-screen timing. "
+        "Do not merge cues together and never leave a translation empty. "
+    ).format(src=_prompt_lang(source), dst=_prompt_lang(target))
+    if mode == "json":
+        instructions += (
+            f"Reply with a JSON array of exactly {n} strings — one translation per cue, in the given order. Nothing else."
+        )
+        response_format: Optional[Dict[str, object]] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "lines",
+                "strict": True,
+                "schema": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": n,
+                    "maxItems": n,
+                },
+            },
+        }
+    else:
+        instructions += (
+            f'Reply with a JSON object: {{"lines": [...]}} containing exactly {n} strings — one translation per cue, in the given order. Nothing else.'
+        )
+        response_format = {"type": "json_object"}
+
+    result = chat_full(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"You translate subtitles in bulk from {_prompt_lang(source)} to {_prompt_lang(target)}. "
+                    f"Always produce natural, idiomatic {_prompt_lang(target)}. "
+                    "Never echo the source text."
+                ),
+            },
+            {"role": "user", "content": f"{instructions}\n\n" + "\n".join(lines)},
+        ],
+        response_format=response_format,
+        repetition_detection=(
+            {"max_pattern_size": 8, "min_count": 3} if repetition_detection else None
+        ),
+        seed=seed,
+    )
+    content = result.get("content") or ""
+    finish_reason = result.get("finish_reason")
+    if finish_reason == "repetition":
+        return [], "degenerate"
+    from .backends import parse_string_array
+
+    translations = parse_string_array(content, n=n)
+    if translations is None:
+        return [], "malformed"
+    out: List[Tuple[str, str]] = []
+    for (pid, prepared, tag_map, bracket_map), translated in zip(protected, translations):
+        cleaned = _cleanup_translation(translated)
+        if not cleaned.strip():
+            cleaned = prepared
+        out.append((pid, _restore_placeholders(cleaned, {**tag_map, **bracket_map})))
+    return out, "ok"
+
+
+def _new_seed() -> int:
+    return random.randint(1, 2**31 - 1)
+
+
 def _apply_batch(
     batch: List[Tuple[str, str]],
     cues_slice: List[Cue],
@@ -410,18 +531,58 @@ def _apply_batch(
     translate_bracketed: bool = True,
     stream: Optional[bool] = None,
     raw_handler: Optional[Callable[[str], None]] = None,
+    mode: str = "sentinel",
+    caps: Optional[Dict[str, bool]] = None,
+    logger: Optional[Callable[[str], None]] = None,
 ) -> List[str]:
-    translated_pairs = llm_translate_batch(
-        batch,
-        backend=backend,
-        source=source,
-        target=target,
-        model=model,
-        translate_bracketed=translate_bracketed,
-        stream=stream,
-        raw_handler=raw_handler,
-    )
-    mapping = {pid: text for pid, text in translated_pairs}
+    mapping: Dict[str, str] = {}
+    status = "ok"
+    if mode in ("json", "json_object") and isinstance(backend, OpenAICompat):
+        rd = bool(caps and caps.get("repetition_detection"))
+        for seed in (None, _new_seed()):
+            pairs, status = llm_translate_batch_structured(
+                batch,
+                backend=backend,
+                model=model,
+                source=source,
+                target=target,
+                mode=mode,
+                translate_bracketed=translate_bracketed,
+                stream=stream,
+                raw_handler=raw_handler,
+                repetition_detection=rd,
+                seed=seed,
+            )
+            mapping = {pid: text for pid, text in pairs}
+            if status == "ok":
+                break
+            if status != "degenerate":
+                break  # malformed: one seeded retry is not worth it; per-cue fallback below
+        if status == "degenerate":
+            cue_index = {str(cue.index): cue for cue in cues_slice}
+            missing: List[str] = []
+            for pid, _ in batch:
+                cue = cue_index.get(pid)
+                if cue is not None:
+                    cue.translated = cue.text  # keep source: visible marker for a human
+                missing.append(pid)
+            if logger:
+                for pid in missing:
+                    logger(f"Flagged cue {pid}: model degenerated (repetition loop); left as source text")
+            return missing
+    else:
+        translated_pairs = llm_translate_batch(
+            batch,
+            backend=backend,
+            source=source,
+            target=target,
+            model=model,
+            translate_bracketed=translate_bracketed,
+            stream=stream,
+            raw_handler=raw_handler,
+        )
+        mapping = {pid: text for pid, text in translated_pairs}
+
     cue_index = {str(cue.index): cue for cue in cues_slice}
     pending: List[Tuple[str, Optional[Cue]]] = []
     for pid, _ in batch:
@@ -508,6 +669,24 @@ def translate_range(
     if batch_n <= 0:
         raise ValueError("batch_n must be positive")
 
+    # Capability probe (once per server+model, cached on the backend):
+    # picks the strongest response contract the server honors. Servers
+    # without structured-output support (or any backend that lacks the
+    # structured API) keep the sentinel protocol.
+    mode = "sentinel"
+    caps: Optional[Dict[str, bool]] = None
+    if batch_n > 1 and isinstance(backend, OpenAICompat):
+        try:
+            caps = backend.probe_capabilities(model)
+            if caps.get("json_schema"):
+                mode = "json"
+            elif caps.get("json_object"):
+                mode = "json_object"
+        except LLMError:
+            mode = "sentinel"  # server unreachable etc.; the real call will surface it
+        if logger:
+            logger(f"Response contract: {mode}" + (" (repetition detection on)" if caps and caps.get("repetition_detection") else ""))
+
     total_cues = len(transcript.cues)
     cues_done = 0
 
@@ -564,6 +743,9 @@ def translate_range(
                             translate_bracketed=translate_bracketed,
                             stream=stream,
                             raw_handler=raw_handler,
+                            mode=mode,
+                            caps=caps,
+                            logger=logger,
                         )
                         cues_done += len(batch)
                         if progress:
@@ -582,6 +764,9 @@ def translate_range(
                         translate_bracketed=translate_bracketed,
                         stream=stream,
                         raw_handler=raw_handler,
+                        mode=mode,
+                        caps=caps,
+                        logger=logger,
                     )
                     cues_done += len(batch)
                     if progress:
