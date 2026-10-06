@@ -5,6 +5,7 @@ on:
     tags:
       - subsetzer-v*
       - subsetzer-gui-v*
+      - subsetzer-web-v*
 
 permissions:
   contents: read
@@ -46,4 +47,22 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/subsetzer-gui/dist
+
+  subsetzer-web:
+    if: startsWith(github.ref_name, 'subsetzer-web-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+      - name: Build subsetzer-web
+        run: python -m build packages/subsetzer-web
+        working-directory: .
+      - name: Publish subsetzer-web to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/subsetzer-web/dist
 
