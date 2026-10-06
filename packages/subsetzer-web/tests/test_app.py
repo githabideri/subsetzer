@@ -145,3 +145,31 @@ def test_models_proxy_error(tmp_path: Path, monkeypatch) -> None:
     client = _client(tmp_path)
     resp = client.get("/models")
     assert resp.status_code == 502
+
+
+def test_models_union_across_registry(tmp_path: Path, monkeypatch) -> None:
+    from subsetzer_web import app as app_module
+
+    monkeypatch.setenv(
+        "SUBSETZER_LLM_SERVERS",
+        '[{"name": "27B (wgpx15)", "url": "http://a:8080/v1"},'
+        ' {"name": "35B (omen-15)", "url": "http://b:8080/v1"}]',
+    )
+
+    def fake_fetch(server):
+        if server["name"].startswith("27B"):
+            return ["qwen3.8-27b-dual", "qwen3.8-27b"]
+        return ["qwen36-35b-96k"]
+
+    monkeypatch.setattr(app_module, "_fetch_models", fake_fetch)
+    client = _client(tmp_path)
+    resp = client.get("/models")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert {(m["id"], m["server"]) for m in body["data"]} == {
+        ("qwen3.8-27b-dual", "27B (wgpx15)"),
+        ("qwen3.8-27b", "27B (wgpx15)"),
+        ("qwen36-35b-96k", "35B (omen-15)"),
+    }
+    assert {s["name"] for s in body["servers"]} == {"27B (wgpx15)", "35B (omen-15)"}
+    assert body["unreachable"] == []

@@ -319,17 +319,35 @@ async function loadModels() {
     const r = await (await fetch(url("/models"))).json();
     const sel = $("model");
     sel.innerHTML = "";
-    for (const m of r.data) {
-      const o = document.createElement("option");
-      o.value = m.id; o.textContent = m.id;
-      sel.appendChild(o);
+    const byServer = {};
+    for (const m of r.data) (byServer[m.server] ||= []).push(m.id);
+    const servers = Object.keys(byServer);
+    const multi = servers.length > 1;
+    for (const s of servers) {
+      if (multi) {
+        const g = document.createElement("optgroup");
+        g.label = s;
+        for (const id of byServer[s]) {
+          const o = document.createElement("option");
+          o.value = id; o.dataset.server = s; o.textContent = id;
+          g.appendChild(o);
+        }
+        sel.appendChild(g);
+      } else {
+        for (const id of byServer[s]) {
+          const o = document.createElement("option");
+          o.value = id; o.dataset.server = s; o.textContent = id;
+          sel.appendChild(o);
+        }
+      }
     }
     if (!r.data.length) {
       const o = document.createElement("option");
-      o.value = ""; o.textContent = "(server reported no models)";
+      o.value = ""; o.textContent = "(servers reported no models)";
       sel.appendChild(o);
     }
-    $("tick").textContent = r.server + " · " + r.data.length + " model(s)";
+    $("tick").textContent = servers.join(", ") + " · " + r.data.length + " model(s)";
+    if (r.unreachable && r.unreachable.length) $("tick").title = "unreachable: " + r.unreachable.join("; ");
   } catch (e) {
     $("model").innerHTML = '<option value="">LLM server unreachable</option>';
     $("tick").textContent = "LLM server unreachable";
@@ -368,6 +386,8 @@ $("go").addEventListener("click", async () => {
     fd.append("source", $("source").value.trim() || "auto");
     fd.append("target", $("target").value.trim() || "English");
     fd.append("model", $("model").value);
+    const opt = $("model").selectedOptions && $("model").selectedOptions[0];
+    if (opt && opt.dataset.server) fd.append("server", opt.dataset.server);
     fd.append("cues_per_request", String($("cues").value || "1"));
     fd.append("no_punc", $("no_punc").checked ? "true" : "false");
     fd.append("one_line", $("one_line").checked ? "true" : "false");

@@ -66,6 +66,7 @@ class Job:
     error: str = ""
     out_file: str = ""
     model: str = ""
+    server: str = ""
     source: str = ""
     target: str = ""
     cues_per_request: int = 1
@@ -82,6 +83,7 @@ class Job:
             "done": self.done,
             "total": self.total,
             "model": self.model,
+            "server": self.server,
             "source": self.source,
             "target": self.target,
             "error": self.error,
@@ -136,7 +138,7 @@ class ServerState:
             chunks = make_chunks(transcript.cues, job.max_chars)
             job.total = len(transcript.cues)
 
-            server = os.getenv("SUBSETZER_LLM_SERVER", "http://127.0.0.1:11434/v1")
+            server = self._pick_server(job.model, job.server)
             extra_body: Optional[Dict[str, object]] = None
             raw_extra = os.getenv("SUBSETZER_EXTRA_BODY", "")
             if raw_extra:
@@ -147,8 +149,8 @@ class ServerState:
             max_tokens_raw = os.getenv("SUBSETZER_MAX_TOKENS", "")
             temperature_raw = os.getenv("SUBSETZER_TEMPERATURE", "")
             backend = OpenAICompat(
-                server,
-                api_key=os.getenv("SUBSETZER_LLM_API_KEY") or None,
+                server["url"],
+                api_key=server.get("api_key") or None,
                 max_tokens=int(max_tokens_raw) if max_tokens_raw else None,
                 temperature=float(temperature_raw) if temperature_raw else None,
                 extra_body=extra_body,
@@ -193,6 +195,21 @@ class ServerState:
             job.status = "error"
             job.error = f"{type(exc).__name__}: {exc}"
 
+    def _pick_server(self, model: str, server_name: str) -> Dict[str, str]:
+        """Resolve the registry entry a job runs against.
+
+        The job carries the server its model came from (set by the UI from
+        the unioned ``/models`` list). Unknown/empty names fall back to the
+        first registered server — with a single-server registry this is the
+        only entry, so plain ``SUBSETZER_LLM_SERVER`` setups are unchanged.
+        """
+        servers = _servers()
+        if server_name:
+            for s in servers:
+                if s["name"] == server_name or s["url"] == server_name:
+                    return s
+        return servers[0]
+
     # -- helpers --------------------------------------------------------
 
     def new_job(self, job: Job) -> int:
@@ -204,6 +221,56 @@ class ServerState:
             self.abort[job.id] = threading.Event()
             self.queue.put(job.id)
             return pending
+
+
+def _servers() -> List[Dict[str, str]]:
+    """The declarative server registry (the only hand-curated piece).
+
+    ``SUBSETZER_LLM_SERVERS`` is a JSON list of ``{"name", "url",
+    "api_key"?}`` (``url`` is a ``/v1`` root), mirroring the llm-hub
+    config. The *model list* is not curated here at all — every registered
+    server self-reports its loaded models via ``/v1/models``, so models
+    appear/disappear in the UI automatically as the hub loads/unloads
+    them. Without the variable, a single ``SUBSETZER_LLM_SERVER``.
+    """
+    raw = os.getenv("SUBSETZER_LLM_SERVERS", "").strip()
+    servers: List[Dict[str, str]] = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            for entry in parsed:
+                if isinstance(entry, dict) and entry.get("url"):
+                    servers.append(
+                        {
+                            "name": str(entry.get("name") or entry["url"]),
+                            "url": str(entry["url"]).rstrip("/"),
+                            "api_key": str(entry.get("api_key") or ""),
+                        }
+                    )
+    if not servers:
+        single = os.getenv("SUBSETZER_LLM_SERVER", "http://127.0.0.1:11434/v1")
+        servers.append(
+            {
+                "name": "default",
+                "url": single.rstrip("/"),
+                "api_key": os.getenv("SUBSETZER_LLM_API_KEY", ""),
+            }
+        )
+    return servers
+
+
+def _fetch_models(server: Dict[str, str]) -> List[str]:
+    url = server["url"] + "/models"
+    req = _UrlRequest(url)
+    if server.get("api_key"):
+        req.add_header("Authorization", f"Bearer {server['api_key']}")
+    with urlopen(req, timeout=10) as resp:
+        payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return [m.get("id", "") for m in data if isinstance(m, dict) and m.get("id")] if isinstance(data, list) else []
 
 
 def _check_token(request: Request) -> None:
@@ -257,19 +324,29 @@ def create_app(api_only: bool = False, data_dir: Optional[Path] = None) -> FastA
 
     @app.get("/models", dependencies=[Depends(_check_token)])
     def models() -> Dict[str, object]:
-        server = os.getenv("SUBSETZER_LLM_SERVER", "http://127.0.0.1:11434/v1")
-        url = server.rstrip("/") + "/models"
-        req = _UrlRequest(url)
-        if os.getenv("SUBSETZER_LLM_API_KEY"):
-            req.add_header("Authorization", f"Bearer {os.getenv('SUBSETZER_LLM_API_KEY')}")
-        try:
-            with urlopen(req, timeout=10) as resp:
-                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (HTTPError, URLError, json.JSONDecodeError) as exc:
-            raise HTTPException(status_code=502, detail=f"Cannot reach LLM server at {url}: {exc}")
-        data = payload.get("data") if isinstance(payload, dict) else None
-        ids = [m.get("id", "") for m in data if isinstance(m, dict)] if isinstance(data, list) else []
-        return {"data": [{"id": i} for i in ids], "server": server}
+        servers = _servers()
+        union: List[Dict[str, str]] = []
+        seen: set = set()
+        errors: List[str] = []
+        for server in servers:
+            try:
+                for mid in _fetch_models(server):
+                    key = (server["name"], mid)
+                    if key not in seen:
+                        seen.add(key)
+                        union.append({"id": mid, "server": server["name"]})
+            except (HTTPError, URLError, json.JSONDecodeError, ValueError) as exc:
+                errors.append(f"{server['name']}: {exc}")
+        if not union:
+            raise HTTPException(
+                status_code=502,
+                detail="No LLM server reachable: " + ("; ".join(errors) or "none registered"),
+            )
+        return {
+            "data": union,
+            "servers": [{"name": s["name"], "url": s["url"]} for s in servers],
+            "unreachable": errors,
+        }
 
     @app.post("/translate", dependencies=[Depends(_check_token)])
     async def translate(
@@ -277,6 +354,7 @@ def create_app(api_only: bool = False, data_dir: Optional[Path] = None) -> FastA
         source: str = Form("auto"),
         target: str = Form("English"),
         model: str = Form(""),
+        server: str = Form(""),
         cues_per_request: int = Form(1),
         max_chars: int = Form(4000),
         no_punc: bool = Form(False),
@@ -296,6 +374,7 @@ def create_app(api_only: bool = False, data_dir: Optional[Path] = None) -> FastA
             id=uuid.uuid4().hex[:12],
             name=file.filename or "input.srt",
             model=model,
+            server=server,
             source=source,
             target=target,
             cues_per_request=max(1, min(int(cues_per_request), 15)),
